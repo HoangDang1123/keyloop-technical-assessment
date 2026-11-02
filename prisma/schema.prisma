@@ -1,0 +1,130 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Customer {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  phone     String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  vehicles     Vehicle[]
+  appointments Appointment[]
+}
+
+model Vehicle {
+  id           Int      @id @default(autoincrement())
+  customerId   Int
+  make         String
+  model        String
+  year         Int
+  vin          String   @unique
+  licensePlate String?
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @updatedAt @db.Timestamptz
+
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  appointments Appointment[]
+
+  @@index([customerId])
+}
+
+model Dealership {
+  id        Int      @id @default(autoincrement())
+  name      String
+  address   String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  technicians  Technician[]
+  serviceBays  ServiceBay[]
+  appointments Appointment[]
+}
+
+model ServiceType {
+  id              Int      @id @default(autoincrement())
+  name            String
+  description     String?
+  durationMinutes Int
+  createdAt       DateTime @default(now()) @db.Timestamptz
+  updatedAt       DateTime @updatedAt @db.Timestamptz
+
+  qualifications TechnicianQualification[]
+  appointments   Appointment[]
+}
+
+model Technician {
+  id           Int      @id @default(autoincrement())
+  dealershipId Int
+  name         String
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @updatedAt @db.Timestamptz
+
+  dealership     Dealership                @relation(fields: [dealershipId], references: [id])
+  qualifications TechnicianQualification[]
+  appointments   Appointment[]
+
+  @@index([dealershipId])
+}
+
+model TechnicianQualification {
+  id            Int      @id @default(autoincrement())
+  technicianId  Int
+  serviceTypeId Int
+  createdAt     DateTime @default(now()) @db.Timestamptz
+
+  technician  Technician  @relation(fields: [technicianId], references: [id])
+  serviceType ServiceType @relation(fields: [serviceTypeId], references: [id])
+
+  @@unique([technicianId, serviceTypeId])
+}
+
+model ServiceBay {
+  id           Int      @id @default(autoincrement())
+  dealershipId Int
+  name         String
+  createdAt    DateTime @default(now()) @db.Timestamptz
+  updatedAt    DateTime @updatedAt @db.Timestamptz
+
+  dealership   Dealership    @relation(fields: [dealershipId], references: [id])
+  appointments Appointment[]
+
+  @@index([dealershipId])
+}
+
+model Appointment {
+  id            Int      @id @default(autoincrement())
+  customerId    Int
+  vehicleId     Int
+  dealershipId  Int
+  serviceTypeId Int
+  technicianId  Int
+  serviceBayId  Int
+  startTime     DateTime @db.Timestamptz
+  endTime       DateTime @db.Timestamptz
+  status        String   @default("CONFIRMED")
+  createdAt     DateTime @default(now()) @db.Timestamptz
+  updatedAt     DateTime @updatedAt @db.Timestamptz
+
+  customer    Customer    @relation(fields: [customerId], references: [id])
+  vehicle     Vehicle     @relation(fields: [vehicleId], references: [id])
+  dealership  Dealership  @relation(fields: [dealershipId], references: [id])
+  serviceType ServiceType @relation(fields: [serviceTypeId], references: [id])
+  technician  Technician  @relation(fields: [technicianId], references: [id])
+  serviceBay  ServiceBay  @relation(fields: [serviceBayId], references: [id])
+
+  @@index([technicianId, startTime, endTime])
+  @@index([serviceBayId, startTime, endTime])
+  @@index([dealershipId, startTime, endTime])
+  @@index([vehicleId])
+}
