@@ -2,67 +2,53 @@ import { PrismaClient } from '@prisma/client';
 
 const defaultPrisma = new PrismaClient();
 
+/**
+ * Non-destructive, idempotent domain reference seeding.
+ * Preserves all existing records across all eight tables.
+ */
 export async function seedDatabase(prisma: PrismaClient = defaultPrisma) {
-  console.log('🌱 Seeding database...');
+  console.log('🌱 Seeding database (non-destructive)...');
 
-  // Clean existing data and reset identity counters to ensure deterministic IDs
-  await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "Appointment", "TechnicianQualification", "ServiceBay", "Technician", "Vehicle", "Customer", "ServiceType", "Dealership" RESTART IDENTITY CASCADE;',
-  );
+  // --- 1. Service Types ---
+  async function getOrCreateServiceType(name: string, description: string, durationMinutes: number) {
+    const existing = await prisma.serviceType.findFirst({ where: { name } });
+    if (existing) return existing;
+    return prisma.serviceType.create({
+      data: { name, description, durationMinutes },
+    });
+  }
 
-  // --- Service Types ---
-  const oilChange = await prisma.serviceType.create({
-    data: {
-      name: 'Oil Change',
-      description: 'Standard oil and filter change',
-      durationMinutes: 30,
-    },
-  });
+  const oilChange = await getOrCreateServiceType('Oil Change', 'Standard oil and filter change', 30);
+  const brakeInspection = await getOrCreateServiceType('Brake Inspection', 'Full brake system inspection and adjustment', 60);
+  const fullService = await getOrCreateServiceType('Full Service', 'Comprehensive vehicle service and inspection', 120);
+  const tireRotation = await getOrCreateServiceType('Tire Rotation', 'Rotate and balance all four tires', 45);
 
-  const brakeInspection = await prisma.serviceType.create({
-    data: {
-      name: 'Brake Inspection',
-      description: 'Full brake system inspection and adjustment',
-      durationMinutes: 60,
-    },
-  });
-
-  const fullService = await prisma.serviceType.create({
-    data: {
-      name: 'Full Service',
-      description: 'Comprehensive vehicle service and inspection',
-      durationMinutes: 120,
-    },
-  });
-
-  const tireRotation = await prisma.serviceType.create({
-    data: {
-      name: 'Tire Rotation',
-      description: 'Rotate and balance all four tires',
-      durationMinutes: 45,
-    },
-  });
-
-  // --- Customers ---
-  const customer1 = await prisma.customer.create({
-    data: {
+  // --- 2. Customers ---
+  const customer1 = await prisma.customer.upsert({
+    where: { email: 'alice.johnson@example.com' },
+    update: { name: 'Alice Johnson', phone: '+1-555-0101' },
+    create: {
       name: 'Alice Johnson',
       email: 'alice.johnson@example.com',
       phone: '+1-555-0101',
     },
   });
 
-  const customer2 = await prisma.customer.create({
-    data: {
+  const customer2 = await prisma.customer.upsert({
+    where: { email: 'bob.smith@example.com' },
+    update: { name: 'Bob Smith', phone: '+1-555-0102' },
+    create: {
       name: 'Bob Smith',
       email: 'bob.smith@example.com',
       phone: '+1-555-0102',
     },
   });
 
-  // --- Vehicles ---
-  const vehicle1 = await prisma.vehicle.create({
-    data: {
+  // --- 3. Vehicles ---
+  const vehicle1 = await prisma.vehicle.upsert({
+    where: { vin: 'JTDKN3DU5A0000001' },
+    update: { customerId: customer1.id, make: 'Toyota', model: 'Camry', year: 2022, licensePlate: 'ABC-1234' },
+    create: {
       customerId: customer1.id,
       make: 'Toyota',
       model: 'Camry',
@@ -72,8 +58,10 @@ export async function seedDatabase(prisma: PrismaClient = defaultPrisma) {
     },
   });
 
-  const vehicle2 = await prisma.vehicle.create({
-    data: {
+  const vehicle2 = await prisma.vehicle.upsert({
+    where: { vin: '2HGFC2F59MH000002' },
+    update: { customerId: customer1.id, make: 'Honda', model: 'Civic', year: 2023, licensePlate: 'DEF-5678' },
+    create: {
       customerId: customer1.id,
       make: 'Honda',
       model: 'Civic',
@@ -83,8 +71,10 @@ export async function seedDatabase(prisma: PrismaClient = defaultPrisma) {
     },
   });
 
-  const vehicle3 = await prisma.vehicle.create({
-    data: {
+  const vehicle3 = await prisma.vehicle.upsert({
+    where: { vin: '1FTEW1EG5JFA00003' },
+    update: { customerId: customer2.id, make: 'Ford', model: 'F-150', year: 2024, licensePlate: 'GHI-9012' },
+    create: {
       customerId: customer2.id,
       make: 'Ford',
       model: 'F-150',
@@ -94,119 +84,101 @@ export async function seedDatabase(prisma: PrismaClient = defaultPrisma) {
     },
   });
 
-  // --- Dealerships ---
-  const dealership1 = await prisma.dealership.create({
-    data: {
-      name: 'Downtown Auto Center',
-      address: '123 Main Street, Springfield, IL',
-    },
-  });
+  // --- 4. Dealerships ---
+  async function getOrCreateDealership(name: string, address: string) {
+    const existing = await prisma.dealership.findFirst({ where: { name } });
+    if (existing) return existing;
+    return prisma.dealership.create({
+      data: { name, address },
+    });
+  }
 
-  const dealership2 = await prisma.dealership.create({
-    data: {
-      name: 'Westside Motors',
-      address: '456 Oak Avenue, Springfield, IL',
-    },
-  });
+  const dealership1 = await getOrCreateDealership('Downtown Auto Center', '123 Main Street, Springfield, IL');
+  const dealership2 = await getOrCreateDealership('Westside Motors', '456 Oak Avenue, Springfield, IL');
 
-  // --- Technicians ---
-  // Dealership 1: 3 technicians
-  const tech1 = await prisma.technician.create({
-    data: {
-      dealershipId: dealership1.id,
-      name: 'Charlie Brown',
-    },
-  });
+  // --- 5. Technicians ---
+  async function getOrCreateTechnician(dealershipId: number, name: string) {
+    const existing = await prisma.technician.findFirst({ where: { dealershipId, name } });
+    if (existing) return existing;
+    return prisma.technician.create({
+      data: { dealershipId, name },
+    });
+  }
 
-  const tech2 = await prisma.technician.create({
-    data: {
-      dealershipId: dealership1.id,
-      name: 'Diana Prince',
-    },
-  });
+  const tech1 = await getOrCreateTechnician(dealership1.id, 'Charlie Brown');
+  const tech2 = await getOrCreateTechnician(dealership1.id, 'Diana Prince');
+  const tech3 = await getOrCreateTechnician(dealership1.id, 'Edward Norton');
+  const tech4 = await getOrCreateTechnician(dealership2.id, 'Frank Castle');
 
-  const tech3 = await prisma.technician.create({
-    data: {
-      dealershipId: dealership1.id,
-      name: 'Edward Norton',
-    },
-  });
+  // --- 6. Technician Qualifications ---
+  async function ensureQualification(technicianId: number, serviceTypeId: number) {
+    await prisma.technicianQualification.upsert({
+      where: {
+        technicianId_serviceTypeId: { technicianId, serviceTypeId },
+      },
+      update: {},
+      create: { technicianId, serviceTypeId },
+    });
+  }
 
-  // Dealership 2: 1 technician (for concurrency testing — limited resources)
-  const tech4 = await prisma.technician.create({
-    data: {
-      dealershipId: dealership2.id,
-      name: 'Frank Castle',
-    },
-  });
-
-  // --- Technician Qualifications ---
   // Tech1 (Charlie): Oil Change, Tire Rotation
-  await prisma.technicianQualification.createMany({
-    data: [
-      { technicianId: tech1.id, serviceTypeId: oilChange.id },
-      { technicianId: tech1.id, serviceTypeId: tireRotation.id },
-    ],
-  });
+  await ensureQualification(tech1.id, oilChange.id);
+  await ensureQualification(tech1.id, tireRotation.id);
 
   // Tech2 (Diana): Oil Change, Brake Inspection, Full Service
-  await prisma.technicianQualification.createMany({
-    data: [
-      { technicianId: tech2.id, serviceTypeId: oilChange.id },
-      { technicianId: tech2.id, serviceTypeId: brakeInspection.id },
-      { technicianId: tech2.id, serviceTypeId: fullService.id },
-    ],
-  });
+  await ensureQualification(tech2.id, oilChange.id);
+  await ensureQualification(tech2.id, brakeInspection.id);
+  await ensureQualification(tech2.id, fullService.id);
 
-  // Tech3 (Edward): Brake Inspection only (for qualification mismatch tests)
-  await prisma.technicianQualification.createMany({
-    data: [
-      { technicianId: tech3.id, serviceTypeId: brakeInspection.id },
-    ],
-  });
+  // Tech3 (Edward): Brake Inspection only
+  await ensureQualification(tech3.id, brakeInspection.id);
 
   // Tech4 (Frank, Dealership 2): Oil Change, Brake Inspection
-  await prisma.technicianQualification.createMany({
-    data: [
-      { technicianId: tech4.id, serviceTypeId: oilChange.id },
-      { technicianId: tech4.id, serviceTypeId: brakeInspection.id },
-    ],
-  });
+  await ensureQualification(tech4.id, oilChange.id);
+  await ensureQualification(tech4.id, brakeInspection.id);
 
-  // --- Service Bays ---
-  // Dealership 1: 2 service bays
-  const bayA = await prisma.serviceBay.create({
-    data: { dealershipId: dealership1.id, name: 'Bay A' },
-  });
+  // --- 7. Service Bays ---
+  async function getOrCreateServiceBay(dealershipId: number, name: string) {
+    const existing = await prisma.serviceBay.findFirst({ where: { dealershipId, name } });
+    if (existing) return existing;
+    return prisma.serviceBay.create({
+      data: { dealershipId, name },
+    });
+  }
 
-  await prisma.serviceBay.create({
-    data: { dealershipId: dealership1.id, name: 'Bay B' },
-  });
+  const bayA = await getOrCreateServiceBay(dealership1.id, 'Bay A');
+  await getOrCreateServiceBay(dealership1.id, 'Bay B');
+  await getOrCreateServiceBay(dealership2.id, 'Bay C');
 
-  // Dealership 2: 1 service bay (for concurrency testing — limited resources)
-  await prisma.serviceBay.create({
-    data: { dealershipId: dealership2.id, name: 'Bay C' },
-  });
-
-  // --- Pre-existing Appointments (for conflict testing) ---
+  // --- 8. Baseline Appointment Fixture ---
   const existingStart = new Date('2026-11-05T10:00:00.000Z');
-  const existingEnd = new Date('2026-11-05T11:00:00.000Z'); // 60-minute brake inspection
+  const existingEnd = new Date('2026-11-05T11:00:00.000Z');
 
-  const existingAppointment = await prisma.appointment.create({
-    data: {
-      customerId: customer1.id,
-      vehicleId: vehicle1.id,
+  let existingAppointment = await prisma.appointment.findFirst({
+    where: {
       dealershipId: dealership1.id,
-      serviceTypeId: brakeInspection.id,
-      technicianId: tech2.id,
-      serviceBayId: bayA.id,
       startTime: existingStart,
       endTime: existingEnd,
-      status: 'CONFIRMED',
     },
   });
 
-  console.log('🎉 Seed completed successfully!');
+  if (!existingAppointment) {
+    existingAppointment = await prisma.appointment.create({
+      data: {
+        customerId: customer1.id,
+        vehicleId: vehicle1.id,
+        dealershipId: dealership1.id,
+        serviceTypeId: brakeInspection.id,
+        technicianId: tech2.id,
+        serviceBayId: bayA.id,
+        startTime: existingStart,
+        endTime: existingEnd,
+        status: 'CONFIRMED',
+      },
+    });
+  }
+
+  console.log('🎉 Seed completed successfully (idempotent, no tables truncated)!');
 
   return {
     serviceTypes: { oilChange, brakeInspection, fullService, tireRotation },

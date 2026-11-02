@@ -185,3 +185,31 @@
   - `ServiceBay`: 3
   - `Appointment`: 1
   - Verified no tables other than `Appointment` were truncated.
+
+
+---
+
+## Milestone 2 SA Corrections (P1 & P2)
+
+### Date: 2026-11-02
+
+---
+
+### Step 15: P1 Destructive Seed Removal & P2 Transaction Rollback Test
+- **P1 Resolution (Non-destructive, Idempotent Seeding)**:
+  - Removed full-table `TRUNCATE` from `prisma/seed.ts`.
+  - Re-implemented domain reference seeding using idempotent lookups (`findFirst`) and upserts (`upsert` on unique keys like `email`, `vin`, and `[technicianId, serviceTypeId]`).
+  - Preserved all seven domain reference tables and existing development appointments during seed execution.
+  - Verified `ensureDomainSeed()` in `tests/helpers.ts` cannot trigger destructive resets.
+  - Retained `resetAppointments()` in `tests/helpers.ts` as the exclusive Appointment TRUNCATE operation in automated tests.
+- **P2 Resolution (Real Transaction Rollback After INSERT)**:
+  - Maintained Test 12 (conflict behavior and subsequent non-overlapping booking).
+  - Added Test 13 in `tests/integration/appointment.test.ts`: executes a real Prisma `$transaction` that acquires the transaction-level advisory lock (`SELECT pg_advisory_xact_lock(1)`), executes a real `tx.appointment.create(...)` INSERT, and then deliberately throws before `COMMIT`.
+  - Verified the transaction rolled back: `prisma.appointment.count()` was unchanged and `findFirst` for the test appointment returned `null`.
+  - Zero public fault-injection endpoints introduced.
+- **Verification**:
+  - `npm run lint`: Exited with code 0 (zero errors).
+  - `npm run build`: Exited with code 0 (compiled to `dist/`).
+  - `npm test` (Run 1): **8 test files passed, 26 of 26 tests passed**.
+  - `npm test` (Run 2): **8 test files passed, 26 of 26 tests passed**.
+  - Database counts verified: 2 Customers, 3 Vehicles, 2 Dealerships, 4 ServiceTypes, 4 Technicians, 8 Qualifications, 3 ServiceBays, 1 baseline Appointment. Zero reference tables truncated.

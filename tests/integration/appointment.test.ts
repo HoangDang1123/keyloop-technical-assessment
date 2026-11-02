@@ -356,4 +356,50 @@ describe('Appointments API (Integration)', () => {
     expect(subsequentBooking.status).toBe(201);
     expect(await prisma.appointment.count()).toBe(countAfterFirstBooking + 1);
   });
+
+  // 13. Real Prisma transaction rollback verification after INSERT (P2 correction)
+  it('13. should roll back and not persist an appointment if an error is thrown after INSERT within a transaction', async () => {
+    const countBefore = await prisma.appointment.count();
+    const testStartTime = new Date('2026-11-25T14:00:00.000Z');
+    const testEndTime = new Date('2026-11-25T14:30:00.000Z');
+
+    // Deliberately run a transaction that acquires advisory lock, performs INSERT,
+    // and throws an error before COMMIT
+    await expect(
+      prisma.$transaction(async (tx) => {
+        // Step 1: Acquire dealership transaction advisory lock
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+
+        // Step 2: Execute real SQL INSERT for an appointment
+        await tx.appointment.create({
+          data: {
+            customerId: 1,
+            vehicleId: 1,
+            dealershipId: 1,
+            serviceTypeId: 1,
+            technicianId: 1,
+            serviceBayId: 1,
+            startTime: testStartTime,
+            endTime: testEndTime,
+            status: 'CONFIRMED',
+          },
+        });
+
+        // Step 3: Deliberately throw an error before COMMIT
+        throw new Error('SIMULATED_TRANSACTION_FAILURE_AFTER_INSERT');
+      }),
+    ).rejects.toThrow('SIMULATED_TRANSACTION_FAILURE_AFTER_INSERT');
+
+    // Step 4: Verify the appointment was rolled back and NOT persisted
+    const countAfter = await prisma.appointment.count();
+    expect(countAfter).toBe(countBefore);
+
+    const uncommittedAppointment = await prisma.appointment.findFirst({
+      where: {
+        dealershipId: 1,
+        startTime: testStartTime,
+      },
+    });
+    expect(uncommittedAppointment).toBeNull();
+  });
 });
