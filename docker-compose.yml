@@ -6,8 +6,8 @@ services:
   container_name: keyloop-postgres
   restart: unless-stopped
   environment:
-   POSTGRES_USER: keyloop_admin
-   POSTGRES_PASSWORD: admin
+   POSTGRES_USER: postgres
+   POSTGRES_PASSWORD: postgres
    POSTGRES_DB: keyloop_scheduler
   ports:
    - "5432:5432"
