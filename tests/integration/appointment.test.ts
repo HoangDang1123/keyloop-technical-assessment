@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { request, resetDatabase } from '../helpers';
+import { request, resetDatabase, resetAppointments } from '../helpers';
+import { prisma } from '../../src/lib/prisma';
 
 describe('Appointments API (Integration)', () => {
   beforeEach(async () => {
@@ -285,5 +286,74 @@ describe('Appointments API (Integration)', () => {
     expect(appointment.technician.id).toBe(appointment.technicianId);
     expect(appointment.serviceBay).toBeDefined();
     expect(appointment.serviceBay.id).toBe(appointment.serviceBayId);
+  });
+
+  // 11. Preservation of the other seven domain tables (PM workflow constraint)
+  it('11. should preserve all seven domain tables when resetAppointments is executed', async () => {
+    // Capture domain table counts before reset
+    const customersBefore = await prisma.customer.count();
+    const vehiclesBefore = await prisma.vehicle.count();
+    const dealershipsBefore = await prisma.dealership.count();
+    const serviceTypesBefore = await prisma.serviceType.count();
+    const techniciansBefore = await prisma.technician.count();
+    const qualificationsBefore = await prisma.technicianQualification.count();
+    const serviceBaysBefore = await prisma.serviceBay.count();
+
+    // Call resetAppointments
+    await resetAppointments();
+
+    // Verify all 7 domain tables remain completely unchanged
+    expect(await prisma.customer.count()).toBe(customersBefore);
+    expect(await prisma.vehicle.count()).toBe(vehiclesBefore);
+    expect(await prisma.dealership.count()).toBe(dealershipsBefore);
+    expect(await prisma.serviceType.count()).toBe(serviceTypesBefore);
+    expect(await prisma.technician.count()).toBe(techniciansBefore);
+    expect(await prisma.technicianQualification.count()).toBe(qualificationsBefore);
+    expect(await prisma.serviceBay.count()).toBe(serviceBaysBefore);
+
+    // Verify only the Appointment table was reset to baseline fixture
+    expect(await prisma.appointment.count()).toBe(1);
+  });
+
+  // 12. Transaction rollback verification
+  it('12. should roll back transaction, persist no appointment, and release advisory lock if booking fails', async () => {
+    // Step 1: Book Dealership 2's only technician & bay from 10:00 to 10:30
+    const successfulBooking = await request.post('/api/v1/appointments').send({
+      customerId: 2,
+      vehicleId: 3,
+      dealershipId: 2,
+      serviceTypeId: 1, // Oil Change (30m)
+      startTime: '2026-11-15T10:00:00.000Z',
+    });
+    expect(successfulBooking.status).toBe(201);
+
+    const countAfterFirstBooking = await prisma.appointment.count();
+
+    // Step 2: Attempt overlapping booking on Dealership 2 (should fail inside transaction)
+    const failedBooking = await request.post('/api/v1/appointments').send({
+      customerId: 2,
+      vehicleId: 3,
+      dealershipId: 2,
+      serviceTypeId: 1,
+      startTime: '2026-11-15T10:15:00.000Z', // Overlaps
+    });
+
+    expect(failedBooking.status).toBe(409);
+
+    // Step 3: Assert rollback occurred — appointment count MUST NOT have increased
+    const countAfterFailedBooking = await prisma.appointment.count();
+    expect(countAfterFailedBooking).toBe(countAfterFirstBooking);
+
+    // Step 4: Assert advisory lock was released by immediately sending a valid non-overlapping booking
+    const subsequentBooking = await request.post('/api/v1/appointments').send({
+      customerId: 2,
+      vehicleId: 3,
+      dealershipId: 2,
+      serviceTypeId: 1,
+      startTime: '2026-11-15T12:00:00.000Z', // 2 hours later, no overlap
+    });
+
+    expect(subsequentBooking.status).toBe(201);
+    expect(await prisma.appointment.count()).toBe(countAfterFirstBooking + 1);
   });
 });

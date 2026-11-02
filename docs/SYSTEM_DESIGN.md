@@ -228,7 +228,7 @@ SELECT pg_advisory_xact_lock($dealershipId);
 
 **Key properties of this approach:**
 1. **Scope**: Scoped per `dealershipId`. Bookings across different dealerships run completely concurrently with zero contention.
-2. **Lifecycle**: An `xact` lock is held exclusively by the database transaction and is automatically released when the transaction terminates (via `COMMIT` or `ROLLBACK`). There are no orphan locks even if the Node.js process crashes.
+2. **Lifecycle & Rollback Safety**: An `xact` lock is held exclusively by the database transaction and is automatically released when the transaction terminates (via `COMMIT` or `ROLLBACK`). If any constraint check fails (no technician, no bay, or validation error), Prisma issues an explicit `ROLLBACK`. Zero partial records are written, and the lock is instantly released for subsequent callers.
 3. **Internal Verification**: Pre-checks outside the transaction are intentionally omitted for write operations. The entire validation, resource query, selection, and insertion are performed **inside** the advisory-locked transaction.
 4. **Deterministic Selection**: Qualified technicians and service bays are ordered by `id ASC`, ensuring deterministic resource allocation.
 
@@ -238,8 +238,9 @@ SELECT pg_advisory_xact_lock($dealershipId);
 
 - **Scalability**: Multiple application server instances can run behind a load balancer without distributed lock infrastructure (like Redis or Redlock). PostgreSQL coordinates lock acquisition across all connections.
 - **Performance**: High-performance indexes on `(technicianId, startTime, endTime)` and `(serviceBayId, startTime, endTime)` allow the planner to perform quick range scans. Timeouts (`timeout: 15000ms`, `maxWait: 10000ms`) prevent runaway connections.
-- **Reliability**: Graceful shutdown handles `SIGINT`/`SIGTERM`, safely draining existing requests and closing Prisma connections.
-- **Maintainability**: Clear separation of `Controller`, `Service`, and `Repository` enables straightforward unit testing without requiring database mocks across all layers.
+- **Reliability & Atomic Rollback**: Transaction rollback is comprehensively verified in automated tests. A failed booking releases the advisory lock immediately and leaves total appointment counts untouched.
+- **Maintainability & Testing Architecture**: In accordance with the simplified assessment workflow, tests run against the primary `keyloop_scheduler` PostgreSQL database on the `public` schema (`NODE_ENV=test`). Automated tests strictly isolate state by truncating *only* the `Appointment` table and re-seeding the baseline test fixture, leaving all seven domain reference tables completely untouched.
+- **Graceful Shutdown**: Handles `SIGINT`/`SIGTERM`, safely draining existing requests and closing Prisma connections.
 
 ---
 

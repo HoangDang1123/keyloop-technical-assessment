@@ -91,7 +91,7 @@ docker compose ps
 npm run migrate:dev
 ```
 
-*(Or `npm run migrate:deploy` for automated/CI environments)*
+_(Or `npm run migrate:deploy` for automated/CI environments)_
 
 ### Step 3: Seed Database
 
@@ -100,6 +100,7 @@ npm run seed
 ```
 
 This populates reproducible sample data including:
+
 - 4 Service Types (Oil Change, Brake Inspection, Full Service, Tire Rotation)
 - 2 Customers (Alice Johnson, Bob Smith)
 - 3 Vehicles linked to customers
@@ -113,6 +114,8 @@ This populates reproducible sample data including:
 ## 6. Build & Run Instructions
 
 ### Development Mode (with hot-reload)
+
+Runs the application under `NODE_ENV=development`. Starting the server or interacting via Swagger UI **never** truncates or resets appointments.
 
 ```bash
 npm run dev
@@ -135,10 +138,10 @@ npm start
 
 ## 7. Testing
 
-Execute automated unit and integration test suites:
+Automated testing runs under `NODE_ENV=test` using Vitest, Supertest, and real PostgreSQL transactions.
 
 ```bash
-# Run tests
+# Run complete test suite
 npm test
 
 # Run tests in watch mode
@@ -147,6 +150,15 @@ npm run test:watch
 # Run tests with coverage
 npm run test:coverage
 ```
+
+> [!IMPORTANT]
+> **Shared Database & Isolation Notice**:
+> In accordance with the simplified assessment workflow, tests run against the primary `keyloop_scheduler` PostgreSQL database on the `public` schema.
+>
+> - **Only the `Appointment` table is truncated** prior to and during the test suite.
+> - The **other seven domain tables** (`Customer`, `Vehicle`, `Dealership`, `ServiceType`, `Technician`, `TechnicianQualification`, `ServiceBay`) are **strictly preserved** and never truncated.
+> - Required appointment fixtures for overlap and concurrency testing are re-created deterministically.
+> - **Running `npm test` will remove appointments previously created during development or manual Swagger UI sessions.** Run `npm run seed` if you wish to restore the development appointment fixture.
 
 ---
 
@@ -159,6 +171,7 @@ http://localhost:3000/api-docs
 ```
 
 The underlying OpenAPI 3.0 specification can be inspected directly:
+
 - **YAML file**: [`docs/openapi.yaml`](docs/openapi.yaml)
 - **Live YAML endpoint**: `GET http://localhost:3000/api-docs/openapi.yaml`
 - **Live JSON endpoint**: `GET http://localhost:3000/api-docs/openapi.json`
@@ -233,16 +246,22 @@ curl -i -X POST http://localhost:3000/api/v1/appointments \
 ## 10. AI Collaboration Narrative
 
 ### Strategy & Workflow
+
 This project was implemented through a pair-programming workflow between the candidate (Project Manager / Lead Engineer) and AI coding assistants. Architectural boundaries were established up front, dividing the system into distinct milestones:
+
 - **M1**: Foundation, Project Configuration, Schema Design, and Docker DB Setup.
 - **M2**: Booking Engine, Advisory Lock Concurrency Protocol, and REST APIs.
 - **M3**: Comprehensive Integration & Concurrency Test Suite.
 - **M4**: Documentation and Observability Polish.
 
 ### Prompting Strategy & Error Correction
+
 - **Prisma & Node Version Alignment**: During dependency installation on Node v20.11.0, latest versions of Prisma (v8 preview/unreleased) and Vitest (v5) threw unsupported engine warnings. We explicitly pinned stable versions (`@prisma/client@5.22.0`, `prisma@5.22.0`, `vitest@1.6.0`, `zod@^3.23.8`).
 - **Containerized Database Strategy**: Rather than installing PostgreSQL natively on the Windows host, the PM directed the use of Docker Desktop with a robust `docker-compose.yml` specifying Alpine-based PostgreSQL 16, a named persistence volume (`keyloop-pgdata`), health checks via `pg_isready`, and development credentials.
 - **TypeScript Strictness**: TypeScript 6 compiler options were strictly verified. Type discrepancies in request IDs between `pino-http` (`ReqId = string | number | object`) and application service parameters were explicitly resolved with `String(req.id)` casting, and unused imports were removed to guarantee clean zero-warning builds.
+- **Advisory Lock & Prisma Raw Execution**: When invoking `pg_advisory_xact_lock`, Prisma's `$queryRaw` failed with `Failed to deserialize column of type 'void'`. We corrected this by utilizing `tx.$executeRaw`, allowing safe acquisition of PostgreSQL transaction-level locks without column mapping issues.
+- **Simplified Testing Lifecycle (M2-FIX)**: Rather than maintaining dual databases or dynamic schemas for the local assessment, the test harness targets the shared `keyloop_scheduler` database under `NODE_ENV=test`. It executes `TRUNCATE TABLE "Appointment" RESTART IDENTITY` while guaranteeing zero mutations or truncation to the seven domain reference tables. Repeatability was validated through consecutive full test suite runs.
 
 ### Verification & Quality Assurance
+
 All code artifacts and configuration files are validated through automated commands (`npx prisma validate`, `npx prisma generate`, `npm run lint`, and `npm run build`) before advancing past each milestone checkpoint.
