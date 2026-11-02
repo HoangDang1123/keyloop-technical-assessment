@@ -1,5 +1,17 @@
 # AI Collaboration Log — Keyloop Technical Assessment
 
+## Collaboration Model — PM, SA, and Developer Agent
+
+I was the **human Project Manager (PM)** and the candidate accountable for this submission. I selected the Scenario A backend scope, chose priorities and local infrastructure constraints, delegated tasks, reviewed outcomes, and decided what needed correction. **ChatGPT was my AI Solution Architect (SA)**, helping analyze architecture, assumptions, technical risks, and verification gaps. **Anti was my AI developer agent**, implementing the backend, schema, tests, bug fixes, and documentation under my direction. Neither AI role represents a human colleague, and I do not claim to have personally written the agent-generated implementation.
+
+My working sequence was **PM defines the outcome → SA reviews design and evidence → PM assigns specific implementation/correction tasks → Anti develops and reports tests → PM evaluates and directs the next iteration**. I used technical review to challenge AI outputs rather than accepting them automatically. In particular, the SA flagged **P1**, destructive full-table seeding, and **P2**, insufficient proof of rollback after a successful INSERT. I prioritized these corrections and assigned Anti to replace the seed with idempotent non-destructive logic and add a transaction test that performs an INSERT then deliberately throws before commit.
+
+**Evidence standard:** The numbered log below records implementation and command results from the development workflow, primarily produced and reported by Anti, with PM decisions and SA review findings where noted. References to commands being executed are historical; ChatGPT did not execute the developer's local commands as part of this documentation update. The final historical report showed 26/26 passing tests across eight files on each of two consecutive runs, plus successful lint and build checks. These results are not represented as an independent rerun.
+
+### How I used this record to assure quality
+
+I compared the developer's changes to the core acceptance criteria, required tests for time-range overlaps, qualification, relationships, ownership validation, and concurrency, and requested explicit database evidence where a passing HTTP test was not enough. I documented trade-offs: tests deliberately reset only the Appointment table in the shared local database, availability does not reserve resources, and advisory-lock protection depends on every appointment writer following the protocol. This log preserves even superseded decisions (such as the original full-table truncate in Step 8) so the review-and-correction process remains auditable.
+
 ## Milestone 1 — Foundation & Database
 
 ### Date: 2026-11-02
@@ -196,6 +208,8 @@
 ---
 
 ### Step 15: P1 Destructive Seed Removal & P2 Transaction Rollback Test
+
+- **Role attribution**: SA identified both review findings; I prioritized and requested corrections as PM; Anti implemented the changes and reported the verification results.
 - **P1 Resolution (Non-destructive, Idempotent Seeding)**:
   - Removed full-table `TRUNCATE` from `prisma/seed.ts`.
   - Re-implemented domain reference seeding using idempotent lookups (`findFirst`) and upserts (`upsert` on unique keys like `email`, `vin`, and `[technicianId, serviceTypeId]`).
