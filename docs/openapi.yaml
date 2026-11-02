@@ -4,7 +4,12 @@ info:
   description: |
     RESTful backend API for vehicle service appointment scheduling across dealerships.
     Provides deterministic dual-resource allocation (technicians and service bays)
-    with transaction-level concurrency safety (PostgreSQL advisory locking) to prevent double-booking.
+    with transaction-level concurrency safety (PostgreSQL advisory locking) to prevent double-booking
+    for all appointment write paths participating in the protocol.
+
+    NOTE: Sample dates (e.g., November 2026) and entity IDs throughout these examples are illustrative.
+    When executing live requests via Swagger UI or cURL, supply a future ISO 8601 timestamp with timezone
+    offset and valid IDs present in your database.
   version: 1.0.0
   contact:
     name: Keyloop Technical Assessment Team
@@ -115,8 +120,12 @@ paths:
     get:
       summary: Check Resource Availability
       description: |
-        Checks whether both a qualified technician and an open service bay are available for the entire duration of the service.
-        Note: This endpoint does NOT hold locks or reserve resources. Availability must be independently re-validated when submitting a booking.
+        Performs a read-only, point-in-time calculation to determine whether both a qualified technician
+        and an open service bay are available for the entire duration of the service.
+
+        IMPORTANT: This endpoint does NOT hold locks or reserve resources. Another client may book
+        the reported slot before an appointment is requested. The appointment creation endpoint
+        independently re-validates all constraints inside an advisory-locked database transaction.
       tags:
         - Availability
       parameters:
@@ -209,9 +218,12 @@ paths:
     post:
       summary: Book a Service Appointment
       description: |
-        Creates a confirmed service appointment. Executes within a transaction-level advisory lock
-        scoped to the dealership ID (`pg_advisory_xact_lock`), ensuring atomic resource allocation
-        and complete immunity to concurrent double-booking.
+        Creates and persists a confirmed service appointment. Executes within a transaction-level advisory
+        lock scoped to the dealership ID (`SELECT pg_advisory_xact_lock(dealershipId)`), ensuring atomic,
+        serialized constraint verification and deterministic dual-resource allocation (technician and bay).
+
+        Double-booking prevention is guaranteed for appointment write paths participating in this protocol.
+        Writes bypassing this protocol are not protected.
       tags:
         - Appointments
       requestBody:

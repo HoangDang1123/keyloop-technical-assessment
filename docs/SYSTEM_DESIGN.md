@@ -2,11 +2,12 @@
 
 ## 1. Overview & Objectives
 
-The Keyloop Unified Service Scheduler is a specialized scheduling engine designed for automotive dealerships. Its objective is to allow vehicle owners to book service appointments while automatically and reliably allocating two scarce, concurrent physical resources:
+The Keyloop Unified Service Scheduler is a specialized RESTful scheduling engine designed for automotive dealerships. Its objective is to allow vehicle owners to book service appointments while automatically and reliably allocating two scarce, concurrent physical resources:
 1. An available **service bay** at the designated dealership.
 2. A **technician** who belongs to the dealership and is certified/qualified for the specific service type.
 
-The system guarantees that no resource is ever double-booked, even under high concurrent load across distributed clients.
+### Concurrency Guarantee & Scope
+Double-booking prevention is guaranteed for appointment write paths that participate in the same dealership-scoped advisory-lock protocol. Any direct database writes, out-of-protocol operations, or external updates that bypass this advisory lock protocol are not protected.
 
 ---
 
@@ -18,15 +19,15 @@ The service adopts a **Modular Monolith** architecture with strict separation of
 flowchart TD
     Client["Client / HTTP Caller"] -->|HTTP / JSON| ExpressApp["Express Application"]
     ExpressApp --> ReqIdMiddleware["Request ID Middleware (UUID v4)"]
-    ReqIdMiddleware --> LoggerMiddleware["Pino HTTP Logger"]
+    ReqIdMiddleware --> LoggerMiddleware["Pino HTTP Logger (Redacts Auth/Cookie)"]
     LoggerMiddleware --> Router["API Router (/api/v1)"]
     
     subgraph Modules ["Feature Modules"]
         direction TB
-        Health["Health Module"]
-        ServiceTypeMod["ServiceType Module"]
-        AvailabilityMod["Availability Module"]
-        AppointmentMod["Appointment Module"]
+        Health["Health Module (/health)"]
+        ServiceTypeMod["ServiceType Module (/api/v1/service-types)"]
+        AvailabilityMod["Availability Module (/api/v1/availability)"]
+        AppointmentMod["Appointment Module (/api/v1/appointments)"]
     end
 
     Router --> Health
@@ -36,9 +37,9 @@ flowchart TD
 
     subgraph Layers ["Appointment Module Layers"]
         direction TB
-        AppController["Appointment Controller (Validation)"]
-        AppService["Appointment Service (Business Logic & Advisory Lock)"]
-        AppRepo["Appointment Repository (Prisma Client)"]
+        AppController["Appointment Controller (Zod Validation & DTO mapping)"]
+        AppService["Appointment Service (Business Logic & Transaction Boundaries)"]
+        AppRepo["Appointment Repository (Advisory Lock & Atomic SQL)"]
         AppController --> AppService --> AppRepo
     end
 
@@ -46,21 +47,25 @@ flowchart TD
     AppRepo -->|pg_advisory_xact_lock & Atomic SQL| Postgres[("PostgreSQL 16 Database")]
 ```
 
+### Component Responsibilities & Technology Stack
+
+- **Express.js**: Lightweight HTTP framework routing requests through standardized middleware pipelines.
+- **Controller Layer**: Parses HTTP parameters and request bodies, invokes Zod validation schemas, and formats responses into standard envelopes (`{ "data": ... }` or `{ "error": { "code", "message" } }`).
+- **Service Layer**: Coordinates business workflows, validates business rules, manages transactional boundaries via Prisma, and enforces deterministic resource selection.
+- **Repository Layer**: Encapsulates database queries via Prisma ORM and executes raw SQL for database-level advisory locking.
+- **PostgreSQL 16 & Prisma ORM**: Relational persistence engine enforcing ACID transactions, foreign keys, unique constraints, and transaction-level advisory locks.
+- **Zod**: Declarative runtime schema validation guaranteeing that untrusted input is validated before entering service layers.
+- **Pino & pino-http**: Ultra-low-overhead structured JSON logging with correlation IDs.
+- **Swagger UI**: Serves interactive API documentation and manual testing at `/api-docs/` loaded from `docs/openapi.yaml`.
+- **Docker Compose**: Provides a containerized, reproducible local PostgreSQL 16 instance.
+
+### Distinction: Availability Checks vs. Confirmed Bookings
+- **`GET /api/v1/availability`**: Performs a read-only, point-in-time calculation of available qualified technicians and service bays. It **does not acquire locks or reserve resources**. Availability reported by this endpoint can be consumed by other clients before a booking is submitted.
+- **`POST /api/v1/appointments`**: The write path that creates confirmed bookings. It does **not** rely on previous availability checks; it **independently re-validates all constraints and resource availability inside an advisory-locked database transaction**.
+
 ---
 
-## 3. Component Responsibilities
-
-| Component | Responsibility |
-|---|---|
-| **Controllers** | Parse incoming HTTP requests, apply Zod schema validation, map DTOs, and format HTTP responses. |
-| **Services** | Enforce business rules, orchestrate multi-step domain flows, manage transaction boundaries, and coordinate concurrency locks. |
-| **Repositories** | Encapsulate database queries via Prisma ORM, execute parameterized raw queries for advisory locks, and handle deterministic ordering. |
-| **Middleware** | Generate and attach correlation request IDs, log structured HTTP events via Pino, and transform application/validation errors into standard JSON envelopes. |
-| **Database** | Store relational state, enforce foreign keys and unique constraints, maintain indexes, and execute transaction-level advisory locks. |
-
----
-
-## 4. Data Flow & Booking Sequence
+## 3. Data Flow & Booking Sequence
 
 ```mermaid
 sequenceDiagram
@@ -71,27 +76,27 @@ sequenceDiagram
     participant DB as PostgreSQL (Transaction)
 
     Customer->>API: POST /api/v1/appointments {customerId, vehicleId, dealershipId, serviceTypeId, startTime}
-    API->>API: Validate schema with Zod
+    API->>API: Validate input schema with Zod
     API->>Service: createAppointment(input, requestId)
     Service->>Service: Verify startTime is in the future
     Service->>DB: Begin Database Transaction
     Service->>DB: SELECT pg_advisory_xact_lock(dealershipId)
-    Note over DB: Serializes concurrent bookings for this dealership
+    Note over DB: Serializes concurrent booking attempts for this dealership
     Service->>DB: Verify customer, vehicle, dealership, serviceType exist
     Service->>Service: Verify vehicle belongs to customer
     Service->>Service: Calculate endTime = startTime + durationMinutes
     Service->>DB: Query qualified technicians free in [startTime, endTime)
     Service->>DB: Query service bays free in [startTime, endTime)
     alt No Technician Available
-        Service->>DB: Rollback Transaction
+        Service->>DB: Rollback Transaction (releases advisory lock)
         Service-->>API: ConflictError (NO_TECHNICIAN_AVAILABLE)
         API-->>Customer: HTTP 409 Conflict
     else No Service Bay Available
-        Service->>DB: Rollback Transaction
+        Service->>DB: Rollback Transaction (releases advisory lock)
         Service-->>API: ConflictError (NO_SERVICE_BAY_AVAILABLE)
         API-->>Customer: HTTP 409 Conflict
     else Both Resources Available
-        Service->>DB: Select technician[0] & serviceBay[0] (ASC ID)
+        Service->>DB: Select technician[0] & serviceBay[0] (deterministic ASC ID)
         Service->>DB: INSERT INTO appointments (...)
         DB-->>Service: Return created appointment
         Service->>DB: Commit Transaction (releases advisory lock)
@@ -102,19 +107,7 @@ sequenceDiagram
 
 ---
 
-## 5. Technology Choices & Justifications
-
-- **Node.js LTS & TypeScript (Strict)**: Strong typing across controllers, domain models, and repositories minimizes runtime errors.
-- **Express.js**: Lightweight, unopinionated framework suitable for building clean RESTful APIs with minimal overhead.
-- **PostgreSQL 16**: Enterprise-grade relational database providing robust ACID transactions and native transactional advisory locks (`pg_advisory_xact_lock`).
-- **Prisma ORM**: Type-safe database queries, schema-as-code migrations, and reliable connection pooling.
-- **Zod**: Declarative runtime schema validation guaranteeing that untrusted input is validated before entering service layers.
-- **Pino & pino-http**: Ultra-low-overhead structured JSON logging with correlation IDs for observability.
-- **Docker Compose**: Ensures a reproducible, containerized local PostgreSQL instance without polluting the host operating system.
-
----
-
-## 6. Database Design
+## 4. Domain Model & Database Design
 
 ```mermaid
 erDiagram
@@ -206,67 +199,102 @@ erDiagram
     }
 ```
 
-### Critical Indexes Supporting Availability Checks
+### Critical Indexes Supporting Availability Lookups
 - `@@index([technicianId, startTime, endTime])` on `Appointment`
 - `@@index([serviceBayId, startTime, endTime])` on `Appointment`
 - `@@index([dealershipId, startTime, endTime])` on `Appointment`
+- `@@index([customerId])` on `Vehicle`
+- `@@index([dealershipId])` on `Technician` and `ServiceBay`
 - `@@unique([technicianId, serviceTypeId])` on `TechnicianQualification`
 
 ---
 
-## 7. Concurrency Strategy
+## 5. Concurrency Strategy & Advisory Locking Protocol
 
-### The Double-Booking Challenge
-In an appointment scheduling system, two simultaneous booking requests for the same time window can easily inspect current availability, observe that a resource is free, and both attempt to book it. Without synchronization, both succeed, causing a double booking.
+### The Concurrency Challenge
+When multiple clients attempt to schedule appointments for the same dealership during overlapping time slots, concurrent transactions can easily read the same available technician and service bay before either transaction commits. Without synchronization, both transactions would persist conflicting appointments, resulting in a double-booking defect.
 
 ### Transaction-Level Advisory Lock Protocol
-We use PostgreSQL's built-in transaction-level advisory locks scoped to the dealership:
+To prevent this, every write path creating appointments acquires a PostgreSQL transaction-level advisory lock scoped to the requested dealership ID:
 
 ```sql
 SELECT pg_advisory_xact_lock($dealershipId);
 ```
 
-**Key properties of this approach:**
-1. **Scope**: Scoped per `dealershipId`. Bookings across different dealerships run completely concurrently with zero contention.
-2. **Lifecycle & Rollback Safety**: An `xact` lock is held exclusively by the database transaction and is automatically released when the transaction terminates (via `COMMIT` or `ROLLBACK`). If any constraint check fails (no technician, no bay, or validation error), Prisma issues an explicit `ROLLBACK`. Zero partial records are written, and the lock is instantly released for subsequent callers.
-3. **Internal Verification**: Pre-checks outside the transaction are intentionally omitted for write operations. The entire validation, resource query, selection, and insertion are performed **inside** the advisory-locked transaction.
-4. **Deterministic Selection**: Qualified technicians and service bays are ordered by `id ASC`, ensuring deterministic resource allocation.
+#### Protocol Sequence inside `AppointmentService.createAppointment`:
+1. **Begin Transaction**: An ACID transaction is opened via `prisma.$transaction`.
+2. **Acquire Dealership Advisory Lock**: `tx.$executeRaw\`SELECT pg_advisory_xact_lock(${dealershipId})\``.
+   - All concurrent write operations targeting the **same dealership** queue on this lock.
+   - Separate dealerships use distinct lock keys (`dealershipId`), allowing them to proceed in parallel without artificial cross-dealership contention.
+3. **Re-Validate Constraints Inside Lock**: The transaction rechecks entity existence, vehicle ownership, and resource availability directly against current committed state.
+4. **Deterministic Allocation**: Available qualified technicians and available service bays are filtered by `[startTime, endTime)` overlap and selected using `id ASC`.
+5. **Persist Appointment**: The appointment is created with status `CONFIRMED`.
+6. **Commit or Rollback**:
+   - On success, the transaction commits, persisting the booking and automatically releasing the advisory lock.
+   - On business conflict or unexpected error, the transaction rolls back, persisting zero partial state and automatically releasing the advisory lock.
+
+#### Concurrency Scope & Architectural Trade-offs
+- **Guaranteed Scope**: Concurrency safety is strictly guaranteed for appointment write operations executed through this protocol. Writes that bypass this protocol (e.g. direct database modifications) are not protected.
+- **Dealership-Level Granularity**: Serializing bookings at the dealership level simplifies correctness by completely eliminating the risk of distributed deadlocks between technician locks and bay locks. However, this introduces an intentional throughput trade-off: all bookings for a single dealership are serialized, regardless of whether they target different bays or technicians.
+- **Shared Infrastructure**: While different dealerships use different advisory lock keys, all transactions share PostgreSQL server resources (connection pool, CPU, memory, and disk I/O). High concurrency across multiple dealerships will still compete for database worker processes.
+- **Advisory Lock Execution via `$executeRaw`**: PostgreSQL's `pg_advisory_xact_lock` returns `void`. Prisma's `$queryRaw` throws a column deserialization error when processing `void`. The repository therefore uses `tx.$executeRaw`, which executes the parameterized query safely without attempting to map a return value.
 
 ---
 
-## 8. Scalability, Performance, Reliability & Maintainability
+## 6. Business Rules & Domain Assumptions
 
-- **Scalability**: Multiple application server instances can run behind a load balancer without distributed lock infrastructure (like Redis or Redlock). PostgreSQL coordinates lock acquisition across all connections.
-- **Performance**: High-performance indexes on `(technicianId, startTime, endTime)` and `(serviceBayId, startTime, endTime)` allow the planner to perform quick range scans. Timeouts (`timeout: 15000ms`, `maxWait: 10000ms`) prevent runaway connections.
-- **Reliability & Atomic Rollback**: Transaction rollback is comprehensively verified in automated tests. A failed booking releases the advisory lock immediately and leaves total appointment counts untouched.
-- **Maintainability & Testing Architecture**: In accordance with the simplified assessment workflow, tests run against the primary `keyloop_scheduler` PostgreSQL database on the `public` schema (`NODE_ENV=test`). Automated tests strictly isolate state by truncating *only* the `Appointment` table and re-seeding the baseline test fixture, leaving all seven domain reference tables completely untouched.
-- **Graceful Shutdown**: Handles `SIGINT`/`SIGTERM`, safely draining existing requests and closing Prisma connections.
+The implementation strictly satisfies all required business rules:
+
+1. **Entity Linking**: Each appointment explicitly links six entities: one Customer, one Vehicle, one Dealership, one ServiceType, one Technician, and one ServiceBay.
+2. **Service Duration**: Appointment duration is dictated exclusively by `ServiceType.durationMinutes`. The end time is calculated as `startTime + durationMinutes * 60 * 1000`.
+3. **Technician Qualification & Dealership**: Assigned technicians must belong to the requested Dealership (`technician.dealershipId === dealershipId`) and possess a verified qualification for the requested ServiceType (`TechnicianQualification` record exists).
+4. **Service Bay Assignment**: Assigned service bays must belong to the requested Dealership (`serviceBay.dealershipId === dealershipId`).
+5. **Dual-Resource Availability**: Both the technician and the service bay must have zero overlapping confirmed appointments over the entire service interval.
+6. **Half-Open Intervals `[startTime, endTime)`**: Overlap is evaluated strictly using `newStart < existingEnd AND newEnd > existingStart`. Strictly adjacent appointments (e.g. `10:00–10:30` and `10:30–11:00`) are valid and permitted.
+7. **Timezone & UTC Handling**: Timestamps are persisted in PostgreSQL with timezone awareness (`@db.Timestamptz`) in UTC. Incoming request timestamps must be valid ISO 8601 strings with timezone offsets (e.g., `2026-11-05T09:00:00+07:00`).
+8. **Future Start Times**: Past appointment start times are strictly rejected with HTTP 400 (`PAST_START_TIME`).
+9. **Out of MVP Scope**: Working hours schedules, dealership holidays, technician shift patterns, leave management, appointment cancellation, rescheduling, customer authentication/authorization, notifications, and payment processing are out of scope.
+10. **Assessment Environment Context**: A single PostgreSQL database supports this assessment. No multi-node cluster, read-replica pool, or production load benchmark has been conducted.
 
 ---
 
-## 9. Observability Strategy
+## 7. Quality Attributes & Testing Evidence
 
-- **Structured Logging**: All logs are emitted in JSON format via Pino.
-- **Correlation IDs**: Each incoming request receives a UUID v4 via `requestIdMiddleware` which is included in all downstream log messages.
-- **Data Privacy**: Headers like `Authorization` and `Cookie` are redacted. Personal identifiable customer details are omitted from general operational log lines.
-- **Future Metrics & Tracing**:
+### Observability
+- **Structured Logging**: Emitted as JSON via Pino.
+- **Correlation IDs**: `requestIdMiddleware` generates or propagates `X-Request-Id` (UUID v4), attaching `req.id` to every log event and error response.
+- **Privacy Controls**: In `src/lib/logger.ts`, request headers `Authorization` and `Cookie` are explicitly redacted (`[REDACTED]`). Sensitive customer details (passwords, payment data, personal notes) are omitted from operational log lines.
+- **Future Enhancements (Planned / Not Implemented)**:
   - Prometheus metrics: `http_request_duration_seconds`, `appointments_booked_total`, `advisory_lock_wait_time_seconds`.
-  - OpenTelemetry tracing spans encompassing `HTTP Route -> Service Validation -> DB Transaction (Lock Acquisition) -> DB Insert`.
+  - OpenTelemetry distributed tracing spans covering HTTP Route → Service Validation → Advisory Lock Wait → DB Commit.
+
+### Reliability & Transaction Rollback
+- Automatic transaction rollback on any validation failure or conflict guarantees that no partial or orphaned records are written.
+- Advisory locks held at the transaction level (`xact`) are automatically cleared by the PostgreSQL engine upon transaction termination, eliminating orphan locks even in the event of Node.js process crashes.
+
+### Testing Evidence
+Automated tests provide three complementary categories of evidence:
+1. **Business Rule Validation Tests**: Integration tests verifying qualification mismatch rejection, vehicle-customer mismatch rejection, past start time rejection, partial overlap rejection, full overlap rejection, and adjacent appointment acceptance.
+2. **Concurrent Booking Integration Tests**: Parallel requests (`Promise.all`) targeting a dealership containing exactly 1 qualified technician and 1 service bay. Tests verify that under real PostgreSQL advisory locking, exactly 1 appointment is confirmed (HTTP 201) and all other overlapping attempts receive HTTP 409 Conflict.
+3. **Rollback-after-INSERT Tests**: A dedicated transaction integration test executes a real SQL `INSERT` for an appointment inside an active transaction, deliberately throws an error prior to `COMMIT`, and confirms that the database contains zero persisted records and leaves the total appointment count unchanged.
 
 ---
 
-## 10. Assumptions & Trade-offs
+## 8. Scalability, Performance & Maintainability Considerations
 
-1. **Advisory Lock Granularity**: We lock per dealership rather than per technician or per bay. This simplifies the lock acquisition sequence (avoids distributed deadlocks between technician vs bay locks) while providing optimal throughput given dealership-level workloads.
-2. **Half-Open Intervals**: Overlaps are evaluated strictly as `[newStart, newEnd)` vs `[existingStart, existingEnd)`. An appointment ending at 10:00 does not conflict with an appointment starting at 10:00.
-3. **No Rescheduling or Cancellations in MVP**: As specified in the scope, only confirmed appointments are created.
+- **Throughput Bottlenecks**: Serializing bookings by dealership ID bounds concurrency per dealership to the duration of one booking transaction. Under high dealership volume, transactions should be kept minimal (avoiding external network calls inside the transaction).
+- **Shared Development & Testing Strategy**: In accordance with the simplified assessment workflow, tests run against the primary `keyloop_scheduler` PostgreSQL database on the `public` schema (`NODE_ENV=test`). Automated tests strictly isolate state by truncating *only* the `Appointment` table and restoring baseline fixtures, leaving all seven domain reference tables completely untouched.
+- **Graceful Shutdown**: The server handles `SIGINT` and `SIGTERM` signals by draining active HTTP connections and disconnecting Prisma Client safely.
 
 ---
 
-## 11. Generative AI Collaboration & Design Verification
+## 9. Generative AI Collaboration & Engineering Oversight
 
-GenAI (Claude Opus & Gemini Flash) was utilized during the architecture and scaffolding phases:
-- **Architecture Validation**: Used to cross-verify the advisory lock formula against race conditions in multi-threaded PostgreSQL environments.
-- **Schema & Migration Planning**: Generated normalized relational models ensuring proper foreign keys and composite indexes for availability search.
-- **Error Detection & Resolution**: Identified and resolved TypeScript 6 compiler deprecations, package version incompatibilities on Node 20 LTS, and Pino HTTP type discrepancies.
-- **Human Oversight**: The Project Manager explicitly validated and guided the transition to Docker Desktop on Windows to safeguard local environment stability.
+GenAI assistance (Claude Opus & Gemini Flash) was utilized across design and implementation phases under strict human engineering direction:
+
+1. **Architecture & Schema Formulation**: AI proposed candidate entity relationships and composite indexes, which the human engineer evaluated against the assessment specification to enforce strict `@db.Timestamptz` and foreign key cascade rules.
+2. **Version Compatibility & Strict Typing**: When latest package releases triggered Node engine warnings on v20.11.0, human direction pinned stable dependencies (`@prisma/client@5.22.0`, `prisma@5.22.0`, `vitest@1.6.0`, `zod@^3.23.8`). TypeScript 6 compiler options were adjusted (`"ignoreDeprecations": "6.0"`) to maintain strict zero-error builds.
+3. **Database Runtime Strategy**: The PM rejected direct native PostgreSQL installation on Windows, mandating Docker Desktop with a healthchecked `postgres:16-alpine` container and persistent volume.
+4. **Advisory Lock Bug Detection**: When Prisma `$queryRaw` threw runtime deserialization errors on PostgreSQL's `void` return type, human and AI collaboration isolated the issue and implemented `tx.$executeRaw`.
+5. **Express 5 Middleware Fix**: Identified and resolved the readonly `req.query` getter restriction in Express 5 by using `Object.defineProperty`.
+6. **Solution Architect Review & Refinement**: Initial automated seed scripts executed full-table truncations. The SA flagged this in review; the team promptly redesigned `prisma/seed.ts` to be non-destructive and idempotent, and added an explicit post-INSERT transaction rollback test.
