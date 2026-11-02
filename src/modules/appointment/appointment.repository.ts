@@ -10,7 +10,7 @@ export class AppointmentRepository {
    * Uses parameterized query to prevent SQL injection.
    */
   async acquireAdvisoryLock(tx: TxClient, dealershipId: number): Promise<void> {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(${dealershipId})`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${dealershipId})`;
   }
 
   /**

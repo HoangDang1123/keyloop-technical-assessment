@@ -74,3 +74,59 @@
 
 ### Step 7: Checkpoint Reached (Database Provisioning)
 - As directed, stopped before executing `prisma migrate` or `prisma db seed` to allow the PM to provision the container with `docker compose up -d`.
+
+
+---
+
+## Milestone 2: API Specification, Concurrency Engine & Automated Testing
+
+### Date: 2026-11-02
+
+---
+
+### Step 8: Database Migration & Verification
+- **Action**: Confirmed PostgreSQL container up on port 5432. Executed `npx prisma migrate dev` (verified migration `20261102082055_init` in sync).
+- **Finding**: Running multiple seed iterations caused sequence counters to increment (`id` 1, 2 became 3, 4, etc.), breaking deterministic ID lookups.
+- **Correction**: Updated `prisma/seed.ts` to execute `TRUNCATE TABLE ... RESTART IDENTITY CASCADE` prior to inserting seed fixtures, guaranteeing identical primary keys across all test runs.
+
+---
+
+### Step 9: OpenAPI 3.0.3 Specification & Swagger UI Integration
+- **Action**: Authored `docs/openapi.yaml` covering all implemented REST endpoints:
+  - `GET /health`
+  - `GET /api/v1/service-types`
+  - `GET /api/v1/availability`
+  - `POST /api/v1/appointments`
+  - `GET /api/v1/appointments/:id`
+- **Feature Details**: Included comprehensive JSON schema models (`ServiceType`, `AvailabilityResult`, `CreateAppointmentRequest`, `Appointment`, `ErrorEnvelope`, `ValidationErrorEnvelope`), along with real examples matching seed data.
+- **Implementation**: Updated `src/swagger/index.ts` to parse `docs/openapi.yaml` using the `yaml` library, serving Swagger UI at `GET /api-docs/` and raw specs at `/api-docs/openapi.json` and `/api-docs/openapi.yaml`.
+
+---
+
+### Step 10: Bug Discovery & Technical Resolution
+- **Issue 1 — PostgreSQL Advisory Lock `void` Deserialization**:
+  - *Symptom*: Prisma `$queryRaw` failed when calling `SELECT pg_advisory_xact_lock(...)` with `PrismaClientKnownRequestError: Failed to deserialize column of type 'void'`.
+  - *Resolution*: Replaced `$queryRaw` with `tx.$executeRaw\`SELECT pg_advisory_xact_lock(${dealershipId})\``. Since advisory lock acquisition is a side-effect command that returns `void`, `$executeRaw` executes the SQL query without expecting a deserializable column set.
+- **Issue 2 — Express 5 `req.query` Getter Restriction**:
+  - *Symptom*: In Express 5, `req.query` is defined with a getter. Calling `req[source] = data` inside `validate.ts` threw `TypeError: Cannot set property query of #<IncomingMessage> which has only a getter`.
+  - *Resolution*: Updated `src/middleware/validate.ts` to use `Object.defineProperty(req, source, { value: data, writable: true, configurable: true, enumerable: true })`.
+
+---
+
+### Step 11: Comprehensive Automated Testing Suite
+- **Action**: Implemented Vitest + Supertest integration and unit tests covering all 11 required scenarios:
+  1. Successful appointment creation with dual resource allocation.
+  2. Rejection (409 Conflict) when service bays are fully booked.
+  3. Rejection (409 Conflict) when qualified technicians are fully booked.
+  4. Rejection (409 Conflict) when dealership has no technician qualified for the service type.
+  5. Rejection (409 Conflict) on partial appointment overlaps (`[10:30, 11:00)` against `[10:00, 11:00)`).
+  6. Rejection (409 Conflict) on full appointment overlaps (`[09:30, 10:30)` against `[10:00, 10:30)`).
+  7. Successful booking of strictly adjacent appointments (`[10:00, 10:30)` and `[10:30, 11:00)`).
+  8. Rejection (400 Bad Request) on missing payload fields, invalid dates, negative IDs, or past start times.
+  9. Rejection (400 Bad Request) on vehicle/customer ownership mismatch.
+  10. Persistence verification and full entity graph retrieval via `GET /api/v1/appointments/:id`.
+  11. Real PostgreSQL concurrent booking test (`concurrency.test.ts`): Fired 5 parallel requests via `Promise.all` targeting Dealership 2 (which has exactly 1 technician and 1 bay). Verified exactly 1 appointment was confirmed (201) and all other 4 were rejected (409).
+- **Execution & Results**:
+  - `npm test`: **8 test files passed, 23 of 23 tests passed (100% success rate)**.
+  - `npm run lint`: **0 errors**.
+  - `npm run build`: **0 errors**.

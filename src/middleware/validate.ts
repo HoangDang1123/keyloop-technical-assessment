@@ -11,8 +11,13 @@ export function validate(schema: ZodSchema, source: 'body' | 'query' | 'params' 
   return (req: Request, _res: Response, next: NextFunction): void => {
     try {
       const data = schema.parse(req[source]);
-      // Replace with parsed/coerced values
-      req[source] = data;
+      // Replace with parsed/coerced values (handle Express 5 getters on req.query)
+      Object.defineProperty(req, source, {
+        value: data,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
       next();
     } catch (err) {
       if (err instanceof ZodError) {

@@ -1,9 +1,14 @@
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
+const defaultPrisma = new PrismaClient();
 
-async function main() {
+export async function seedDatabase(prisma: PrismaClient = defaultPrisma) {
   console.log('🌱 Seeding database...');
+
+  // Clean existing data and reset identity counters to ensure deterministic IDs
+  await prisma.$executeRawUnsafe(
+    'TRUNCATE TABLE "Appointment", "TechnicianQualification", "ServiceBay", "Technician", "Vehicle", "Customer", "ServiceType", "Dealership" RESTART IDENTITY CASCADE;',
+  );
 
   // --- Service Types ---
   const oilChange = await prisma.serviceType.create({
@@ -38,8 +43,6 @@ async function main() {
     },
   });
 
-  console.log(`  ✅ Created ${4} service types`);
-
   // --- Customers ---
   const customer1 = await prisma.customer.create({
     data: {
@@ -56,8 +59,6 @@ async function main() {
       phone: '+1-555-0102',
     },
   });
-
-  console.log(`  ✅ Created ${2} customers`);
 
   // --- Vehicles ---
   const vehicle1 = await prisma.vehicle.create({
@@ -93,8 +94,6 @@ async function main() {
     },
   });
 
-  console.log(`  ✅ Created ${3} vehicles`);
-
   // --- Dealerships ---
   const dealership1 = await prisma.dealership.create({
     data: {
@@ -110,10 +109,8 @@ async function main() {
     },
   });
 
-  console.log(`  ✅ Created ${2} dealerships`);
-
   // --- Technicians ---
-  // Dealership 1: 3 technicians with varied qualifications
+  // Dealership 1: 3 technicians
   const tech1 = await prisma.technician.create({
     data: {
       dealershipId: dealership1.id,
@@ -142,8 +139,6 @@ async function main() {
       name: 'Frank Castle',
     },
   });
-
-  console.log(`  ✅ Created ${4} technicians`);
 
   // --- Technician Qualifications ---
   // Tech1 (Charlie): Oil Change, Tire Rotation
@@ -178,11 +173,9 @@ async function main() {
     ],
   });
 
-  console.log(`  ✅ Created technician qualifications`);
-
   // --- Service Bays ---
   // Dealership 1: 2 service bays
-  await prisma.serviceBay.create({
+  const bayA = await prisma.serviceBay.create({
     data: { dealershipId: dealership1.id, name: 'Bay A' },
   });
 
@@ -195,46 +188,46 @@ async function main() {
     data: { dealershipId: dealership2.id, name: 'Bay C' },
   });
 
-  console.log(`  ✅ Created ${3} service bays`);
-
   // --- Pre-existing Appointments (for conflict testing) ---
-  // An existing appointment at Dealership 1 to test partial/full overlap
   const existingStart = new Date('2026-11-05T10:00:00.000Z');
   const existingEnd = new Date('2026-11-05T11:00:00.000Z'); // 60-minute brake inspection
 
-  await prisma.appointment.create({
+  const existingAppointment = await prisma.appointment.create({
     data: {
       customerId: customer1.id,
       vehicleId: vehicle1.id,
       dealershipId: dealership1.id,
       serviceTypeId: brakeInspection.id,
       technicianId: tech2.id,
-      serviceBayId: 1, // Bay A
+      serviceBayId: bayA.id,
       startTime: existingStart,
       endTime: existingEnd,
       status: 'CONFIRMED',
     },
   });
 
-  console.log(`  ✅ Created 1 pre-existing appointment (2026-11-05T10:00-11:00Z at Dealership 1)`);
-
-  console.log('');
   console.log('🎉 Seed completed successfully!');
-  console.log('');
-  console.log('Summary:');
-  console.log('  - Service Types: Oil Change (30m), Brake Inspection (60m), Full Service (120m), Tire Rotation (45m)');
-  console.log('  - Customers: Alice (vehicles 1,2), Bob (vehicle 3)');
-  console.log('  - Dealership 1 (Downtown): 3 technicians, 2 bays');
-  console.log('  - Dealership 2 (Westside): 1 technician, 1 bay (concurrency test scenario)');
-  console.log('  - Existing appointment: Brake Inspection at Dealership 1, 10:00-11:00 UTC on 2026-11-05');
+
+  return {
+    serviceTypes: { oilChange, brakeInspection, fullService, tireRotation },
+    customers: { customer1, customer2 },
+    vehicles: { vehicle1, vehicle2, vehicle3 },
+    dealerships: { dealership1, dealership2 },
+    technicians: { tech1, tech2, tech3, tech4 },
+    serviceBays: { bayA },
+    existingAppointment,
+  };
 }
 
-main()
-  .then(async () => {
-    await prisma.$disconnect();
-  })
-  .catch(async (e) => {
-    console.error('❌ Seed failed:', e);
-    await prisma.$disconnect();
-    process.exit(1);
-  });
+// Auto-run if executed directly via CLI
+if (require.main === module || !process.env.VITEST) {
+  seedDatabase(defaultPrisma)
+    .then(async () => {
+      await defaultPrisma.$disconnect();
+    })
+    .catch(async (e) => {
+      console.error('❌ Seed failed:', e);
+      await defaultPrisma.$disconnect();
+      process.exit(1);
+    });
+}

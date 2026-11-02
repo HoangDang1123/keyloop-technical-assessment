@@ -1,0 +1,633 @@
+openapi: 3.0.3
+info:
+  title: Keyloop Unified Service Scheduler API
+  description: |
+    RESTful backend API for vehicle service appointment scheduling across dealerships.
+    Provides deterministic dual-resource allocation (technicians and service bays)
+    with transaction-level concurrency safety (PostgreSQL advisory locking) to prevent double-booking.
+  version: 1.0.0
+  contact:
+    name: Keyloop Technical Assessment Team
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: System
+    description: Health and system diagnostics
+  - name: Service Types
+    description: Catalogs of vehicle service offerings
+  - name: Availability
+    description: Real-time resource availability queries
+  - name: Appointments
+    description: Booking and retrieving service appointments
+
+paths:
+  /health:
+    get:
+      summary: System Health Check
+      description: Verifies database connectivity and server responsiveness.
+      tags:
+        - System
+      responses:
+        '200':
+          description: Service is healthy and database is reachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                      - status
+                      - timestamp
+                    properties:
+                      status:
+                        type: string
+                        example: ok
+                      timestamp:
+                        type: string
+                        format: date-time
+                        example: '2026-11-02T08:30:00.000Z'
+        '503':
+          description: Database connection failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                error:
+                  code: SERVICE_UNAVAILABLE
+                  message: Database connection failed
+
+  /api/v1/service-types:
+    get:
+      summary: List Service Types
+      description: Retrieves all available automotive service types with standard durations.
+      tags:
+        - Service Types
+      responses:
+        '200':
+          description: A list of service types.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceType'
+              example:
+                data:
+                  - id: 1
+                    name: Oil Change
+                    description: Standard oil and filter change
+                    durationMinutes: 30
+                    createdAt: '2026-11-02T08:34:45.123Z'
+                    updatedAt: '2026-11-02T08:34:45.123Z'
+                  - id: 2
+                    name: Brake Inspection
+                    description: Full brake system inspection and adjustment
+                    durationMinutes: 60
+                    createdAt: '2026-11-02T08:34:45.123Z'
+                    updatedAt: '2026-11-02T08:34:45.123Z'
+                  - id: 3
+                    name: Full Service
+                    description: Comprehensive vehicle service and inspection
+                    durationMinutes: 120
+                    createdAt: '2026-11-02T08:34:45.123Z'
+                    updatedAt: '2026-11-02T08:34:45.123Z'
+                  - id: 4
+                    name: Tire Rotation
+                    description: Rotate and balance all four tires
+                    durationMinutes: 45
+                    createdAt: '2026-11-02T08:34:45.123Z'
+                    updatedAt: '2026-11-02T08:34:45.123Z'
+
+  /api/v1/availability:
+    get:
+      summary: Check Resource Availability
+      description: |
+        Checks whether both a qualified technician and an open service bay are available for the entire duration of the service.
+        Note: This endpoint does NOT hold locks or reserve resources. Availability must be independently re-validated when submitting a booking.
+      tags:
+        - Availability
+      parameters:
+        - name: dealershipId
+          in: query
+          required: true
+          description: Identifier of the dealership.
+          schema:
+            type: integer
+            example: 1
+        - name: serviceTypeId
+          in: query
+          required: true
+          description: Identifier of the requested service type.
+          schema:
+            type: integer
+            example: 1
+        - name: startTime
+          in: query
+          required: true
+          description: Desired start time formatted in ISO 8601 with timezone offset.
+          schema:
+            type: string
+            format: date-time
+            example: '2026-11-05T09:00:00+07:00'
+      responses:
+        '200':
+          description: Availability calculation result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AvailabilityResult'
+              examples:
+                available:
+                  summary: Resources Available
+                  value:
+                    data:
+                      available: true
+                      dealershipId: 1
+                      serviceTypeId: 1
+                      serviceTypeName: Oil Change
+                      durationMinutes: 30
+                      startTime: '2026-11-05T02:00:00.000Z'
+                      endTime: '2026-11-05T02:30:00.000Z'
+                      availableTechnicians: 2
+                      availableServiceBays: 2
+                unavailable:
+                  summary: Resources Booked
+                  value:
+                    data:
+                      available: false
+                      dealershipId: 2
+                      serviceTypeId: 1
+                      serviceTypeName: Oil Change
+                      durationMinutes: 30
+                      startTime: '2026-11-05T10:00:00.000Z'
+                      endTime: '2026-11-05T10:30:00.000Z'
+                      availableTechnicians: 0
+                      availableServiceBays: 1
+        '400':
+          description: Request parameters failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorEnvelope'
+              example:
+                error:
+                  code: VALIDATION_ERROR
+                  message: Request validation failed
+                  details:
+                    - path: startTime
+                      message: Invalid datetime string
+        '404':
+          description: Dealership or ServiceType not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                error:
+                  code: NOT_FOUND
+                  message: Dealership with id 99 not found
+
+  /api/v1/appointments:
+    post:
+      summary: Book a Service Appointment
+      description: |
+        Creates a confirmed service appointment. Executes within a transaction-level advisory lock
+        scoped to the dealership ID (`pg_advisory_xact_lock`), ensuring atomic resource allocation
+        and complete immunity to concurrent double-booking.
+      tags:
+        - Appointments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppointmentRequest'
+            examples:
+              validBooking:
+                summary: Oil Change Booking (Dealership 1)
+                value:
+                  customerId: 1
+                  vehicleId: 1
+                  dealershipId: 1
+                  serviceTypeId: 1
+                  startTime: '2026-11-05T09:00:00+07:00'
+              brakeInspection:
+                summary: Brake Inspection Booking (Dealership 1)
+                value:
+                  customerId: 2
+                  vehicleId: 3
+                  dealershipId: 1
+                  serviceTypeId: 2
+                  startTime: '2026-11-05T14:00:00+07:00'
+      responses:
+        '201':
+          description: Appointment successfully confirmed and persisted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Appointment'
+              example:
+                data:
+                  id: 2
+                  customerId: 1
+                  vehicleId: 1
+                  dealershipId: 1
+                  serviceTypeId: 1
+                  technicianId: 1
+                  serviceBayId: 1
+                  startTime: '2026-11-05T02:00:00.000Z'
+                  endTime: '2026-11-05T02:30:00.000Z'
+                  status: CONFIRMED
+                  createdAt: '2026-11-02T08:35:00.000Z'
+                  updatedAt: '2026-11-02T08:35:00.000Z'
+                  customer:
+                    id: 1
+                    name: Alice Johnson
+                    email: alice.johnson@example.com
+                    phone: +1-555-0101
+                  vehicle:
+                    id: 1
+                    customerId: 1
+                    make: Toyota
+                    model: Camry
+                    year: 2022
+                    vin: JTDKN3DU5A0000001
+                    licensePlate: ABC-1234
+                  dealership:
+                    id: 1
+                    name: Downtown Auto Center
+                    address: 123 Main Street, Springfield, IL
+                  serviceType:
+                    id: 1
+                    name: Oil Change
+                    durationMinutes: 30
+                  technician:
+                    id: 1
+                    dealershipId: 1
+                    name: Charlie Brown
+                  serviceBay:
+                    id: 1
+                    dealershipId: 1
+                    name: Bay A
+        '400':
+          description: Business rule validation failed (e.g., past start time, vehicle mismatch).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                pastStartTime:
+                  summary: Past Appointment Time
+                  value:
+                    error:
+                      code: PAST_START_TIME
+                      message: Appointment start time must be in the future
+                vehicleMismatch:
+                  summary: Vehicle Does Not Belong to Customer
+                  value:
+                    error:
+                      code: VEHICLE_CUSTOMER_MISMATCH
+                      message: Vehicle 3 does not belong to customer 1
+        '404':
+          description: Referenced entity does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                error:
+                  code: NOT_FOUND
+                  message: Customer with id 99 not found
+        '409':
+          description: Resource conflict (no technician or service bay available).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                noTechnician:
+                  summary: No Qualified Technician Available
+                  value:
+                    error:
+                      code: NO_TECHNICIAN_AVAILABLE
+                      message: No qualified technician available for the requested time slot
+                noServiceBay:
+                  summary: No Service Bay Available
+                  value:
+                    error:
+                      code: NO_SERVICE_BAY_AVAILABLE
+                      message: No service bay available for the requested time slot
+
+  /api/v1/appointments/{id}:
+    get:
+      summary: Retrieve Appointment
+      description: Returns complete details of a confirmed appointment including customer, vehicle, technician, and service bay.
+      tags:
+        - Appointments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Numeric ID of the appointment.
+          schema:
+            type: integer
+            example: 1
+      responses:
+        '200':
+          description: Full appointment details.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Appointment'
+              example:
+                data:
+                  id: 1
+                  customerId: 1
+                  vehicleId: 1
+                  dealershipId: 1
+                  serviceTypeId: 2
+                  technicianId: 2
+                  serviceBayId: 1
+                  startTime: '2026-11-05T10:00:00.000Z'
+                  endTime: '2026-11-05T11:00:00.000Z'
+                  status: CONFIRMED
+                  createdAt: '2026-11-02T08:34:45.000Z'
+                  updatedAt: '2026-11-02T08:34:45.000Z'
+                  customer:
+                    id: 1
+                    name: Alice Johnson
+                    email: alice.johnson@example.com
+                    phone: +1-555-0101
+                  vehicle:
+                    id: 1
+                    customerId: 1
+                    make: Toyota
+                    model: Camry
+                    year: 2022
+                    vin: JTDKN3DU5A0000001
+                    licensePlate: ABC-1234
+                  dealership:
+                    id: 1
+                    name: Downtown Auto Center
+                    address: 123 Main Street, Springfield, IL
+                  serviceType:
+                    id: 2
+                    name: Brake Inspection
+                    durationMinutes: 60
+                  technician:
+                    id: 2
+                    dealershipId: 1
+                    name: Diana Prince
+                  serviceBay:
+                    id: 1
+                    dealershipId: 1
+                    name: Bay A
+        '404':
+          description: Appointment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                error:
+                  code: NOT_FOUND
+                  message: Appointment with id 999 not found
+
+components:
+  schemas:
+    ServiceType:
+      type: object
+      required:
+        - id
+        - name
+        - durationMinutes
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Oil Change
+        description:
+          type: string
+          nullable: true
+          example: Standard oil and filter change
+        durationMinutes:
+          type: integer
+          example: 30
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    AvailabilityResult:
+      type: object
+      required:
+        - available
+        - dealershipId
+        - serviceTypeId
+        - serviceTypeName
+        - durationMinutes
+        - startTime
+        - endTime
+        - availableTechnicians
+        - availableServiceBays
+      properties:
+        available:
+          type: boolean
+          example: true
+        dealershipId:
+          type: integer
+          example: 1
+        serviceTypeId:
+          type: integer
+          example: 1
+        serviceTypeName:
+          type: string
+          example: Oil Change
+        durationMinutes:
+          type: integer
+          example: 30
+        startTime:
+          type: string
+          format: date-time
+          example: '2026-11-05T02:00:00.000Z'
+        endTime:
+          type: string
+          format: date-time
+          example: '2026-11-05T02:30:00.000Z'
+        availableTechnicians:
+          type: integer
+          example: 2
+        availableServiceBays:
+          type: integer
+          example: 2
+
+    CreateAppointmentRequest:
+      type: object
+      required:
+        - customerId
+        - vehicleId
+        - dealershipId
+        - serviceTypeId
+        - startTime
+      properties:
+        customerId:
+          type: integer
+          example: 1
+        vehicleId:
+          type: integer
+          example: 1
+        dealershipId:
+          type: integer
+          example: 1
+        serviceTypeId:
+          type: integer
+          example: 1
+        startTime:
+          type: string
+          format: date-time
+          example: '2026-11-05T09:00:00+07:00'
+
+    Appointment:
+      type: object
+      required:
+        - id
+        - customerId
+        - vehicleId
+        - dealershipId
+        - serviceTypeId
+        - technicianId
+        - serviceBayId
+        - startTime
+        - endTime
+        - status
+      properties:
+        id:
+          type: integer
+          example: 1
+        customerId:
+          type: integer
+          example: 1
+        vehicleId:
+          type: integer
+          example: 1
+        dealershipId:
+          type: integer
+          example: 1
+        serviceTypeId:
+          type: integer
+          example: 1
+        technicianId:
+          type: integer
+          example: 1
+        serviceBayId:
+          type: integer
+          example: 1
+        startTime:
+          type: string
+          format: date-time
+          example: '2026-11-05T02:00:00.000Z'
+        endTime:
+          type: string
+          format: date-time
+          example: '2026-11-05T02:30:00.000Z'
+        status:
+          type: string
+          example: CONFIRMED
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        customer:
+          type: object
+        vehicle:
+          type: object
+        dealership:
+          type: object
+        serviceType:
+          type: object
+        technician:
+          type: object
+        serviceBay:
+          type: object
+
+    ErrorEnvelope:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: NOT_FOUND
+            message:
+              type: string
+              example: Resource not found
+
+    ValidationErrorEnvelope:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+            - details
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: Request validation failed
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  path:
+                    type: string
+                    example: startTime
+                  message:
+                    type: string
+                    example: Required

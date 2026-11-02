@@ -152,11 +152,16 @@ npm run test:coverage
 
 ## 8. API Documentation
 
-Interactive Swagger UI documentation is available at:
+Interactive Swagger UI documentation is available locally at:
 
 ```
 http://localhost:3000/api-docs
 ```
+
+The underlying OpenAPI 3.0 specification can be inspected directly:
+- **YAML file**: [`docs/openapi.yaml`](docs/openapi.yaml)
+- **Live YAML endpoint**: `GET http://localhost:3000/api-docs/openapi.yaml`
+- **Live JSON endpoint**: `GET http://localhost:3000/api-docs/openapi.json`
 
 Raw health check:
 
@@ -167,6 +172,8 @@ GET http://localhost:3000/health
 ---
 
 ## 9. Example cURL Requests
+
+For reviewers who prefer direct HTTP testing over Swagger UI:
 
 ### 1. Health Check
 
@@ -180,13 +187,13 @@ curl -i http://localhost:3000/health
 curl -i http://localhost:3000/api/v1/service-types
 ```
 
-### 3. Check Availability
+### 3. Check Availability (Resources Available)
 
 ```bash
 curl -i "http://localhost:3000/api/v1/availability?dealershipId=1&serviceTypeId=1&startTime=2026-11-05T09:00:00%2B07:00"
 ```
 
-### 4. Create Confirmed Appointment
+### 4. Create Confirmed Appointment (Dealership 1, Oil Change)
 
 ```bash
 curl -i -X POST http://localhost:3000/api/v1/appointments \
@@ -200,10 +207,25 @@ curl -i -X POST http://localhost:3000/api/v1/appointments \
   }'
 ```
 
-### 5. Get Appointment Details
+### 5. Get Appointment Details by ID
 
 ```bash
 curl -i http://localhost:3000/api/v1/appointments/1
+```
+
+### 6. Conflict Example (Concurrent / Overlapping Booking Rejection)
+
+```bash
+# Attempt booking overlapping with the pre-seeded 10:00-11:00 UTC appointment on Dealership 2
+curl -i -X POST http://localhost:3000/api/v1/appointments \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customerId": 2,
+    "vehicleId": 3,
+    "dealershipId": 2,
+    "serviceTypeId": 1,
+    "startTime": "2026-11-05T10:15:00+00:00"
+  }'
 ```
 
 ---
