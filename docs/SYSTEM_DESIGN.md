@@ -290,11 +290,23 @@ Automated tests provide three complementary categories of evidence:
 
 ## 9. Generative AI Collaboration & Engineering Oversight
 
-GenAI assistance (Claude Opus & Gemini Flash) was utilized across design and implementation phases under strict human engineering direction:
+I approached design as the **human Project Manager (PM)** of an AI-assisted workflow. I selected the backend of Scenario A and defined priorities and acceptance criteria. I used **ChatGPT as my AI Solution Architect (SA)** for architectural reasoning, risk assessment, and design/code review, while **Anti served as my AI developer agent** to implement the codebase, tests, and documentation. I reviewed feedback and retained responsibility for deciding which solutions and trade-offs to accept; I do not claim to have personally authored all implementation files.
 
-1. **Architecture & Schema Formulation**: AI proposed candidate entity relationships and composite indexes, which the human engineer evaluated against the assessment specification to enforce strict `@db.Timestamptz` and foreign key cascade rules.
-2. **Version Compatibility & Strict Typing**: When latest package releases triggered Node engine warnings on v20.11.0, human direction pinned stable dependencies (`@prisma/client@5.22.0`, `prisma@5.22.0`, `vitest@1.6.0`, `zod@^3.23.8`). TypeScript 6 compiler options were adjusted (`"ignoreDeprecations": "6.0"`) to maintain strict zero-error builds.
-3. **Database Runtime Strategy**: The PM rejected direct native PostgreSQL installation on Windows, mandating Docker Desktop with a healthchecked `postgres:16-alpine` container and persistent volume.
-4. **Advisory Lock Bug Detection**: When Prisma `$queryRaw` threw runtime deserialization errors on PostgreSQL's `void` return type, human and AI collaboration isolated the issue and implemented `tx.$executeRaw`.
-5. **Express 5 Middleware Fix**: Identified and resolved the readonly `req.query` getter restriction in Express 5 by using `Object.defineProperty`.
-6. **Solution Architect Review & Refinement**: Initial automated seed scripts executed full-table truncations. The SA flagged this in review; the team promptly redesigned `prisma/seed.ts` to be non-destructive and idempotent, and added an explicit post-INSERT transaction rollback test.
+### AI assistance during the design phase
+
+I translated the requirements into a reproducible REST backend with persistent PostgreSQL records, a qualified technician and service bay available throughout the entire appointment, and atomic booking creation. I discussed separation of concerns with the SA and adopted a **modular monolith** using Controller → Service → Repository layers, choosing maintainability and simplicity for a time-boxed assessment. I chose Docker Desktop for local PostgreSQL on Windows rather than a host installation. Anti implemented the corresponding Prisma schema, APIs, migration/seed scripts, and tests under that scope.
+
+A key design risk was concurrent requests selecting the same available resources. The adopted transaction-level **dealership-scoped PostgreSQL advisory lock** serializes participating booking writers, allowing a fresh qualification/availability check and INSERT within the same transaction. SA review emphasized the scope of this guarantee: it does not protect direct writers bypassing the lock protocol, and dealership-level serialization reduces throughput. The read-only availability endpoint is explicitly non-reserving.
+
+### Design challenges, revisions, and quality ownership
+
+1. **Dependency and runtime feedback:** Anti investigated package compatibility with Node 20.11 and repaired Prisma advisory-lock `void` deserialization by using `$executeRaw` instead of `$queryRaw`. The Express 5 `req.query` getter required a validation middleware change. Reported build and test results informed acceptance.
+2. **P1 — destructive seeding:** SA review identified the initial full-table `TRUNCATE ... RESTART IDENTITY CASCADE` as a data-loss risk. I prioritized correction and delegated the change to Anti. The final seed uses non-destructive, idempotent reference-data operations. This intentionally supersedes the historical seed implementation recorded in the AI collaboration log.
+3. **P2 — direct rollback evidence:** SA review identified that HTTP 409 conflict behavior did not prove a transaction would roll back after INSERT. I required Anti to add a real Prisma transaction test that inserts a new appointment, deliberately fails before commit, and checks that the new row is absent while committed data is unchanged.
+4. **Testing trade-off:** I chose a shared local database/schema for the assessment workflow. Automated tests explicitly reset only Appointment, which can remove development bookings; this is documented in the README rather than concealed.
+
+### How I evaluated the result
+
+I relied on business-rule integration tests, appointment persistence/relationship assertions, time-interval overlap tests, a five-request real-database concurrency test (**one success and four conflicts**), and rollback-after-INSERT evidence. Anti's recorded final verification reported **26 passing tests across eight test files on two consecutive runs**, plus successful lint and build checks. These are historical results from development, not new tests executed during documentation review.
+
+I used AI to accelerate architecture exploration, implementation, and debugging, but retained ownership by specifying outcomes, examining technical evidence, prioritizing design corrections, and acknowledging limitations. Detailed chronological evidence is in [AI_COLLABORATION_LOG.md](AI_COLLABORATION_LOG.md).
