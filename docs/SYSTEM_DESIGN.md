@@ -30,7 +30,7 @@ flowchart TD
         AppointmentMod["Appointment Module (/api/v1/appointments)"]
     end
 
-    Router --> Health
+    ExpressApp --> Health
     Router --> ServiceTypeMod
     Router --> AvailabilityMod
     Router --> AppointmentMod
@@ -231,7 +231,7 @@ SELECT pg_advisory_xact_lock($dealershipId);
 5. **Persist Appointment**: The appointment is created with status `CONFIRMED`.
 6. **Commit or Rollback**:
    - On success, the transaction commits, persisting the booking and automatically releasing the advisory lock.
-   - On business conflict or unexpected error, the transaction rolls back, persisting zero partial state and automatically releasing the advisory lock.
+   - On business conflict or unexpected error, the transaction rolls back. A failed transaction persists zero new records, while previously committed appointments remain intact; the advisory lock is automatically released.
 
 #### Concurrency Scope & Architectural Trade-offs
 - **Guaranteed Scope**: Concurrency safety is strictly guaranteed for appointment write operations executed through this protocol. Writes that bypass this protocol (e.g. direct database modifications) are not protected.
@@ -262,8 +262,8 @@ The implementation strictly satisfies all required business rules:
 
 ### Observability
 - **Structured Logging**: Emitted as JSON via Pino.
-- **Correlation IDs**: `requestIdMiddleware` generates or propagates `X-Request-Id` (UUID v4), attaching `req.id` to every log event and error response.
-- **Privacy Controls**: In `src/lib/logger.ts`, request headers `Authorization` and `Cookie` are explicitly redacted (`[REDACTED]`). Sensitive customer details (passwords, payment data, personal notes) are omitted from operational log lines.
+- **Request IDs**: `requestIdMiddleware` uses a supplied `X-Request-Id` header when present, or generates a UUID otherwise. The ID is attached to request logging and included in structured error log entries. The error response bodies do not include the request ID.
+- **Privacy Controls**: In `src/lib/logger.ts`, request headers `Authorization` and `Cookie` are redacted as `[REDACTED]`. Pino HTTP logs request metadata, including headers, but does not log the request body; the two sensitive headers are censored.
 - **Future Enhancements (Planned / Not Implemented)**:
   - Prometheus metrics: `http_request_duration_seconds`, `appointments_booked_total`, `advisory_lock_wait_time_seconds`.
   - OpenTelemetry distributed tracing spans covering HTTP Route → Service Validation → Advisory Lock Wait → DB Commit.
@@ -276,7 +276,7 @@ The implementation strictly satisfies all required business rules:
 Automated tests provide three complementary categories of evidence:
 1. **Business Rule Validation Tests**: Integration tests verifying qualification mismatch rejection, vehicle-customer mismatch rejection, past start time rejection, partial overlap rejection, full overlap rejection, and adjacent appointment acceptance.
 2. **Concurrent Booking Integration Tests**: Parallel requests (`Promise.all`) targeting a dealership containing exactly 1 qualified technician and 1 service bay. Tests verify that under real PostgreSQL advisory locking, exactly 1 appointment is confirmed (HTTP 201) and all other overlapping attempts receive HTTP 409 Conflict.
-3. **Rollback-after-INSERT Tests**: A dedicated transaction integration test executes a real SQL `INSERT` for an appointment inside an active transaction, deliberately throws an error prior to `COMMIT`, and confirms that the database contains zero persisted records and leaves the total appointment count unchanged.
+3. **Rollback-after-INSERT Tests**: A dedicated transaction integration test inserts an appointment inside a real active transaction, deliberately throws an error before `COMMIT`, and confirms that this new appointment was not persisted and the total appointment count remained unchanged. Existing committed appointments remain in the database.
 
 ---
 

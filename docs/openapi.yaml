@@ -8,6 +8,8 @@ info:
     for all appointment write paths participating in the protocol.
 
     NOTE: Sample dates (e.g., November 2026) and entity IDs throughout these examples are illustrative.
+    The unavailable Dealership 2 availability example assumes an overlapping Dealership 2 booking has
+    already been created; the reference seed does not include a Dealership 2 appointment.
     When executing live requests via Swagger UI or cURL, supply a future ISO 8601 timestamp with timezone
     offset and valid IDs present in your database.
   version: 1.0.0
@@ -186,10 +188,10 @@ paths:
                       serviceTypeId: 1
                       serviceTypeName: Oil Change
                       durationMinutes: 30
-                      startTime: '2026-11-05T10:00:00.000Z'
-                      endTime: '2026-11-05T10:30:00.000Z'
+                      startTime: '2026-11-15T10:00:00.000Z'
+                      endTime: '2026-11-15T10:30:00.000Z'
                       availableTechnicians: 0
-                      availableServiceBays: 1
+                      availableServiceBays: 0
         '400':
           description: Request parameters failed validation.
           content:

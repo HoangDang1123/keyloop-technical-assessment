@@ -1,6 +1,6 @@
 # AI Collaboration Log — Keyloop Technical Assessment
 
-## Milestone 1: Foundation & Database Configuration
+## Milestone 1 — Foundation & Database
 
 ### Date: 2026-11-02
 
@@ -84,7 +84,7 @@
 
 ---
 
-## Milestone 2: API Specification, Concurrency Engine & Automated Testing
+## Milestone 2 — Booking Engine, REST API, Swagger UI, Automated Tests & SA Corrections
 
 ### Date: 2026-11-02
 
@@ -164,7 +164,7 @@
 
 - **Action**: Added two dedicated integration tests in `tests/integration/appointment.test.ts`:
   - **Test 11 (Domain Table Preservation)**: Recorded counts for all 7 domain tables before calling `resetAppointments()`. Verified all 7 counts remained identical (Customer: 2, Vehicle: 3, Dealership: 2, ServiceType: 4, Technician: 4, Qualifications: 8, ServiceBay: 3), with only `Appointment` reset to 1.
-  - **Test 12 (Transactional Rollback Verification)**: Created a booking on Dealership 2, then attempted an overlapping booking. Verified the second attempt failed with 409 Conflict, verified `prisma.appointment.count()` was unchanged (confirming rollback of partial state), and immediately submitted a valid non-overlapping booking to confirm the advisory lock was released.
+  - **Test 12 (Conflict and Lock Release)**: Created a booking on Dealership 2, then attempted an overlapping booking. Verified the second attempt failed with HTTP 409, the appointment count stayed unchanged, and a subsequent non-overlapping booking succeeded, showing the lock was released. This test verifies business conflict behavior; it does not directly exercise an INSERT followed by transaction rollback.
 
 ---
 
@@ -203,13 +203,13 @@
   - Verified `ensureDomainSeed()` in `tests/helpers.ts` cannot trigger destructive resets.
   - Retained `resetAppointments()` in `tests/helpers.ts` as the exclusive Appointment TRUNCATE operation in automated tests.
 - **P2 Resolution (Real Transaction Rollback After INSERT)**:
-  - Maintained Test 12 (conflict behavior and subsequent non-overlapping booking).
+  - Maintained Test 12 (HTTP 409 business conflict, unchanged appointment count, and subsequent successful booking).
   - Added Test 13 in `tests/integration/appointment.test.ts`: executes a real Prisma `$transaction` that acquires the transaction-level advisory lock (`SELECT pg_advisory_xact_lock(1)`), executes a real `tx.appointment.create(...)` INSERT, and then deliberately throws before `COMMIT`.
-  - Verified the transaction rolled back: `prisma.appointment.count()` was unchanged and `findFirst` for the test appointment returned `null`.
+  - Verified the transaction rolled back: the test appointment was not persisted and the total appointment count was unchanged. This demonstrates zero new records from the failed transaction, not zero total appointments in the database.
   - Zero public fault-injection endpoints introduced.
 - **Verification**:
   - `npm run lint`: Exited with code 0 (zero errors).
   - `npm run build`: Exited with code 0 (compiled to `dist/`).
-  - `npm test` (Run 1): **8 test files passed, 26 of 26 tests passed**.
-  - `npm test` (Run 2): **8 test files passed, 26 of 26 tests passed**.
+  - `npm test` (Run 1): **8 test files passed, 26 of 26 tests passed** (final historical result).
+  - `npm test` (Run 2): **8 test files passed, 26 of 26 tests passed** (same final historical result, repeated).
   - Database counts verified: 2 Customers, 3 Vehicles, 2 Dealerships, 4 ServiceTypes, 4 Technicians, 8 Qualifications, 3 ServiceBays, 1 baseline Appointment. Zero reference tables truncated.
