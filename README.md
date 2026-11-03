@@ -71,6 +71,71 @@ For a production build, run `npm run build` followed by `npm start`. Use `npm ru
 
 The OpenAPI document is also served at `http://localhost:3000/api-docs/openapi.yaml` and `http://localhost:3000/api-docs/openapi.json`.
 
+## Manual API Testing with Swagger UI
+
+Swagger UI provides an interactive test client, so reviewers can exercise the backend without building a frontend or using PowerShell/cURL.
+
+### 1. Start the API
+
+Complete the [Setup](#setup) steps first (including Docker, migration, and seed), then run:
+
+```bash
+npm run dev
+```
+
+Open **http://localhost:3000/api-docs** in a browser. Expand an endpoint, select **Try it out**, enter the parameters or JSON body, and select **Execute**. Check the HTTP status in **Server response** and inspect the returned JSON.
+
+**Before running the examples:** Use a start time **in the future when you actually test** and in ISO 8601 format with an explicit timezone (`Z` for UTC or an offset such as `+07:00`). The sample `2030-06-15T10:00:00Z` below is illustrative; change it if that date has passed or the slot is already booked. Seeded numeric IDs are typical for a fresh database but may differ if the database already contained records. `GET /api/v1/service-types` returns actual service-type IDs; the reference seed contains customer Bob, vehicle Ford F-150, and Dealership 2 (Westside Motors). For a deterministic conflict demonstration, use the actual matching IDs for those records.
+
+### 2. Verify the service and catalog
+
+- Expand **GET /health** → **Try it out** → **Execute**. Expect **200 OK** and `data.status: "ok"` (if the API and database are reachable).
+- Expand **GET /api/v1/service-types** and execute it. Expect **200 OK** with the service types and `durationMinutes`. Note the ID for **Oil Change** (30 minutes).
+
+### 3. Check availability (read-only)
+
+Expand **GET /api/v1/availability**, choose **Try it out**, and enter:
+
+| Parameter | Value for a freshly seeded database |
+| --- | --- |
+| `dealershipId` | `2` (Westside Motors) |
+| `serviceTypeId` | `1` (Oil Change) |
+| `startTime` | `2030-06-15T10:00:00Z` (replace with a free future slot) |
+
+Select **Execute**. Expect **200 OK**, with `data.available: true` and positive `availableTechnicians` and `availableServiceBays` when the slot is free. This endpoint **does not reserve resources**. Its result can change before a booking is created.
+
+### 4. Create a confirmed appointment
+
+Expand **POST /api/v1/appointments** → **Try it out**, replace the request JSON with:
+
+```json
+{
+  "customerId": 2,
+  "vehicleId": 3,
+  "dealershipId": 2,
+  "serviceTypeId": 1,
+  "startTime": "2030-06-15T10:00:00Z"
+}
+```
+
+Use a valid **future** start time and actual IDs from your own seeded database. Choose **Execute**. Expect **201 Created**, with `data.status: "CONFIRMED"`, an appointment `data.id`, an `endTime` calculated from service duration, and assigned `technicianId` and `serviceBayId`. Copy `data.id` for the next step.
+
+### 5. Retrieve the persisted appointment
+
+Expand **GET /api/v1/appointments/{id}** → **Try it out**. Paste the **appointment ID returned in Step 4**, then **Execute**. Expect **200 OK** with the saved appointment and related customer, vehicle, dealership, service type, technician, and service bay. This is a straightforward persistence check using a separate request.
+
+### 6. Demonstrate an overlapping booking conflict
+
+Return to **POST /api/v1/appointments** and submit another request using the **same customer, vehicle, dealership, and Oil Change service type**, but a start time **15 minutes after Step 4** (for example, `2030-06-15T10:15:00Z` if Step 4 used `10:00:00Z`). Oil Change lasts **30 minutes**, so the intervals overlap.
+
+Because the reference seed has **one qualified technician and one bay at Dealership 2**, expect **409 Conflict** with error code `NO_TECHNICIAN_AVAILABLE` or `NO_SERVICE_BAY_AVAILABLE`. The earlier successful appointment remains persisted. If Step 4 returned `409`, select another future free time and perform Step 4 before this conflict test. Do **not** use Dealership 1 for this deterministic demonstration: it has more resources, so overlapping requests may both succeed.
+
+### Notes and limitations
+
+- Swagger verifies API behavior manually; it is **not** a replacement for automated concurrency and rollback integration tests. Use `npm test` for those cases.
+- **Tests are destructive to appointment data:** `npm test` truncates only the `Appointment` table and restores a baseline fixture in the shared development database. Running tests after a Swagger booking can erase it. For a clean manual demo, run automated tests **before** creating appointments in Swagger.
+- Seed data is non-destructive and does not reset existing appointments. Repeat demonstrations with new free time slots, or use a separate disposable database if you need a clean reset.
+
 Examples below use Windows PowerShell. Replace IDs with IDs from your database where necessary; seeded IDs are illustrative and may differ if records existed before seeding. Use a start time in the future when executing requests.
 
 ### Health and catalog
